@@ -1,0 +1,56 @@
+# 需要排除的文件类型
+*.csv
+*.txt
+*.pkl
+*.log
+*.png
+*.pyc
+*.pyo
+
+# Python缓存目录
+__pycache__/
+
+# 日志目录
+logs/
+logs_lgbm/
+
+# 模型目录
+models_lgbm/
+
+# 结果目录
+backtest_results_lgbm/
+processed_data_lgbm/
+
+# 原始数据目录
+raw_data/
+
+# 图片目录
+plots_lgbm/
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# IDE文件
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 环境文件
+venv/
+env/
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# 测试文件
+pytest_cache/
+
+# 构建文件
+build/
+dist/
+*.egg-info/
