@@ -13,6 +13,10 @@ from typing import List, Dict, Tuple, Optional
 import warnings
 warnings.filterwarnings('ignore')
 
+# 默认导入talib库
+import talib
+logging.info("talib库导入成功，使用talib计算所有技术指标")
+
 from config import Config
 
 # 设置日志
@@ -73,7 +77,7 @@ class FeatureEngineer:
     
     def calculate_moving_averages(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        计算移动平均线特征
+        使用talib计算移动平均线特征
         
         Args:
             df: 原始数据
@@ -84,14 +88,14 @@ class FeatureEngineer:
         df_features = df.copy()
         
         for window in Config.MA_WINDOWS:
-            # 简单移动平均线
-            df_features[f'ma_{window}'] = df_features['close'].rolling(window=window).mean()
-            # 指数移动平均线
-            df_features[f'ema_{window}'] = df_features['close'].ewm(span=window, adjust=False).mean()
-            # 价格与均线的偏差
+            # 直接使用talib计算简单移动平均线和指数移动平均线
+            df_features[f'ma_{window}'] = talib.SMA(df_features['close'].values, timeperiod=window)
+            df_features[f'ema_{window}'] = talib.EMA(df_features['close'].values, timeperiod=window)
+            
+            # 计算价格与均线的偏差
             df_features[f'ma_diff_{window}'] = df_features['close'] - df_features[f'ma_{window}']
             df_features[f'ma_diff_pct_{window}'] = df_features[f'ma_diff_{window}'] / df_features[f'ma_{window}']
-            # 均线斜率
+            # 计算均线斜率
             df_features[f'ma_slope_{window}'] = df_features[f'ma_{window}'].diff(3) / 3
         
         # 添加到特征列表
@@ -104,7 +108,7 @@ class FeatureEngineer:
     
     def calculate_rsi(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        计算RSI指标
+        使用talib计算RSI指标
         
         Args:
             df: 原始数据
@@ -113,23 +117,14 @@ class FeatureEngineer:
             pd.DataFrame: 添加了RSI特征的数据
         """
         df_features = df.copy()
-        delta = df_features['close'].diff()
         
         for window in Config.RSI_WINDOWS:
-            gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+            # 直接使用talib计算RSI
+            df_features[f'rsi_{window}'] = talib.RSI(df_features['close'].values, timeperiod=window)
             
-            # 避免除零错误
-            rs = gain / loss.replace(0, 1e-10)
-            rsi = 100 - (100 / (1 + rs))
-            
-            df_features[f'rsi_{window}'] = rsi
-            
-            # RSI的移动平均线
-            df_features[f'rsi_ma_{window}'] = rsi.rolling(window=window).mean()
-            
-            # RSI的趋势
-            df_features[f'rsi_trend_{window}'] = rsi.diff(window)
+            # 计算RSI的移动平均线和趋势
+            df_features[f'rsi_ma_{window}'] = df_features[f'rsi_{window}'].rolling(window=window).mean()
+            df_features[f'rsi_trend_{window}'] = df_features[f'rsi_{window}'].diff(window)
         
         # 添加到特征列表
         for window in Config.RSI_WINDOWS:
@@ -140,7 +135,7 @@ class FeatureEngineer:
     
     def calculate_macd(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        计算MACD指标
+        使用talib计算MACD指标
         
         Args:
             df: 原始数据
@@ -150,12 +145,17 @@ class FeatureEngineer:
         """
         df_features = df.copy()
         
-        # 计算MACD
-        ema_fast = df_features['close'].ewm(span=Config.MACD_FAST, adjust=False).mean()
-        ema_slow = df_features['close'].ewm(span=Config.MACD_SLOW, adjust=False).mean()
-        df_features['macd_line'] = ema_fast - ema_slow
-        df_features['macd_signal'] = df_features['macd_line'].ewm(span=Config.MACD_SIGNAL, adjust=False).mean()
-        df_features['macd_hist'] = df_features['macd_line'] - df_features['macd_signal']
+        # 直接使用talib计算MACD
+        # talib.MACD返回 (macd_line, signal_line, histogram)
+        macd_line, macd_signal, macd_hist = talib.MACD(
+            df_features['close'].values,
+            fastperiod=Config.MACD_FAST,
+            slowperiod=Config.MACD_SLOW,
+            signalperiod=Config.MACD_SIGNAL
+        )
+        df_features['macd_line'] = macd_line
+        df_features['macd_signal'] = macd_signal
+        df_features['macd_hist'] = macd_hist
         
         # MACD的特征扩展
         df_features['macd_hist_ma'] = df_features['macd_hist'].rolling(window=5).mean()
@@ -175,7 +175,7 @@ class FeatureEngineer:
     
     def calculate_bollinger_bands(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        计算布林带指标
+        使用talib计算布林带指标
         
         Args:
             df: 原始数据
@@ -186,13 +186,15 @@ class FeatureEngineer:
         df_features = df.copy()
         
         for window in Config.BB_WINDOWS:
-            # 计算布林带
-            middle_band = df_features['close'].rolling(window=window).mean()
-            std_dev = df_features['close'].rolling(window=window).std()
-            upper_band = middle_band + (std_dev * Config.BB_STD)
-            lower_band = middle_band - (std_dev * Config.BB_STD)
-            
-            # 存储结果
+            # 直接使用talib计算布林带
+            # talib.BBANDS返回 (upperband, middleband, lowerband)
+            upper_band, middle_band, lower_band = talib.BBANDS(
+                df_features['close'].values,
+                timeperiod=window,
+                nbdevup=Config.BB_STD,
+                nbdevdn=Config.BB_STD,
+                matype=0  # 简单移动平均
+            )
             df_features[f'bb_upper_{window}'] = upper_band
             df_features[f'bb_middle_{window}'] = middle_band
             df_features[f'bb_lower_{window}'] = lower_band
@@ -220,7 +222,7 @@ class FeatureEngineer:
     
     def calculate_volatility_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        计算波动率特征
+        使用talib计算波动率特征
         
         Args:
             df: 原始数据
@@ -231,40 +233,26 @@ class FeatureEngineer:
         df_features = df.copy()
         
         for window in Config.VOLATILITY_WINDOWS:
-            # 真实波动幅度均值 (ATR)
-            df_features['tr'] = np.maximum(
-                df_features['high'] - df_features['low'],
-                np.maximum(
-                    np.abs(df_features['high'] - df_features['close'].shift(1)),
-                    np.abs(df_features['low'] - df_features['close'].shift(1))
-                )
+            # 直接使用talib计算ATR
+            df_features[f'atr_{window}'] = talib.ATR(
+                df_features['high'].values,
+                df_features['low'].values,
+                df_features['close'].values,
+                timeperiod=window
             )
-            df_features[f'atr_{window}'] = df_features['tr'].rolling(window=window).mean()
+            
+            # 计算ATR百分比
             df_features[f'atr_pct_{window}'] = df_features[f'atr_{window}'] / df_features['close']
-            
-            # 对数收益率的波动率
-            df_features['log_return'] = np.log(df_features['close'] / df_features['close'].shift(1))
-            df_features[f'log_vol_{window}'] = df_features['log_return'].rolling(window=window).std()
-            
-            # 波动率的变化率
-            df_features[f'vol_change_{window}'] = df_features[f'log_vol_{window}'].pct_change()
         
         # 添加到特征列表
         for window in Config.VOLATILITY_WINDOWS:
-            new_features = [f'atr_{window}', f'atr_pct_{window}', f'log_vol_{window}', f'vol_change_{window}']
-            self.feature_names.extend(new_features)
-        
-        # 删除临时列
-        if 'tr' in df_features.columns:
-            df_features = df_features.drop('tr', axis=1)
-        if 'log_return' in df_features.columns:
-            df_features = df_features.drop('log_return', axis=1)
+            self.feature_names.extend([f'atr_{window}', f'atr_pct_{window}'])
         
         return df_features
     
     def calculate_momentum_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        计算动量特征
+        使用talib计算动量特征
         
         Args:
             df: 原始数据
@@ -275,31 +263,38 @@ class FeatureEngineer:
         df_features = df.copy()
         
         for window in Config.MOMENTUM_WINDOWS:
+            # 直接使用talib计算动量指标和变化率
             # 动量指标
-            df_features[f'momentum_{window}'] = df_features['close'] - df_features['close'].shift(window)
+            df_features[f'momentum_{window}'] = talib.MOM(df_features['close'].values, timeperiod=window)
+            # 变化率
+            df_features[f'roc_{window}'] = talib.ROC(df_features['close'].values, timeperiod=window)
+            
+            # 计算动量百分比
             df_features[f'momentum_pct_{window}'] = df_features[f'momentum_{window}'] / df_features['close'].shift(window)
             
-            # 变化率
-            df_features[f'roc_{window}'] = df_features['close'].pct_change(periods=window)
-            
-            # 相对强弱
+            # 计算相对强弱
             df_features[f'rs_{window}'] = df_features['close'] / df_features['close'].shift(window)
         
-        # 计算威廉指标 (W%R)
-        df_features['williams_r'] = (df_features['high'].rolling(14).max() - df_features['close']) / \
-                                   (df_features['high'].rolling(14).max() - df_features['low'].rolling(14).min()) * -100
+        # 直接使用talib计算威廉指标 (W%R)
+        df_features['williams_r'] = talib.WILLR(
+            df_features['high'].values,
+            df_features['low'].values,
+            df_features['close'].values,
+            timeperiod=14
+        )
         
         # 添加到特征列表
         for window in Config.MOMENTUM_WINDOWS:
-            new_features = [f'momentum_{window}', f'momentum_pct_{window}', f'roc_{window}', f'rs_{window}']
-            self.feature_names.extend(new_features)
+            self.feature_names.extend([f'momentum_{window}', f'momentum_pct_{window}', 
+                                     f'roc_{window}', f'rs_{window}'])
+        
         self.feature_names.append('williams_r')
         
         return df_features
     
     def calculate_volume_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        计算成交量相关特征
+        使用talib计算成交量特征
         
         Args:
             df: 原始数据
@@ -309,40 +304,27 @@ class FeatureEngineer:
         """
         df_features = df.copy()
         
-        # 基本成交量特征
-        df_features['volume_change'] = df_features[Config.VOLUME_COL].pct_change()
-        df_features['volume_ma_5'] = df_features[Config.VOLUME_COL].rolling(5).mean()
-        df_features['volume_ma_10'] = df_features[Config.VOLUME_COL].rolling(10).mean()
-        df_features['volume_ratio'] = df_features[Config.VOLUME_COL] / df_features['volume_ma_10']
-        
-        # 量价关系
+        # 直接使用talib计算成交量移动平均
         for window in Config.VOLUME_PRICE_WINDOWS:
-            # 价格上涨时的平均成交量
-            up_days = df_features['close'] > df_features['close'].shift(1)
-            df_features[f'volume_up_{window}'] = df_features[Config.VOLUME_COL].where(up_days, 0).rolling(window).mean()
-            # 价格下跌时的平均成交量
-            down_days = df_features['close'] < df_features['close'].shift(1)
-            df_features[f'volume_down_{window}'] = df_features[Config.VOLUME_COL].where(down_days, 0).rolling(window).mean()
-            # 成交量比率
-            df_features[f'volume_ratio_{window}'] = df_features[f'volume_up_{window}'] / \
-                                                   (df_features[f'volume_down_{window}'] + 1e-10)
+            df_features[f'volume_ma_{window}'] = talib.SMA(df_features['volume'].values, timeperiod=window)
+            df_features[f'volume_ema_{window}'] = talib.EMA(df_features['volume'].values, timeperiod=window)
+            
+            # 计算成交量与均线的偏差
+            df_features[f'volume_diff_pct_{window}'] = (df_features['volume'] - df_features[f'volume_ma_{window}']) / df_features[f'volume_ma_{window}']
         
-        # 资金流向指标 (简化版)
-        df_features['price_pressure'] = (df_features['close'] - df_features['open']) / \
-                                       (df_features['high'] - df_features['low'] + 1e-10)
-        df_features['money_flow'] = df_features['price_pressure'] * df_features[Config.VOLUME_COL]
+        # 计算成交量加权平均价格 (VWAP)
+        df_features['vwap'] = (df_features['volume'] * df_features['close']).rolling(window=10).sum() / df_features['volume'].rolling(window=10).sum()
         
         # 添加到特征列表
-        new_features = ['volume_change', 'volume_ma_5', 'volume_ma_10', 'volume_ratio', 'price_pressure', 'money_flow']
         for window in Config.VOLUME_PRICE_WINDOWS:
-            new_features.extend([f'volume_up_{window}', f'volume_down_{window}', f'volume_ratio_{window}'])
-        self.feature_names.extend(new_features)
+            self.feature_names.extend([f'volume_ma_{window}', f'volume_ema_{window}', f'volume_diff_pct_{window}'])
+        self.feature_names.append('vwap')
         
         return df_features
     
     def calculate_statistical_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        计算统计特征
+        使用talib计算统计特征
         
         Args:
             df: 原始数据
@@ -353,16 +335,20 @@ class FeatureEngineer:
         df_features = df.copy()
         
         for window in Config.STAT_WINDOWS:
-            # 偏度和峰度
+            # 直接使用talib计算波动率
+            df_features[f'volatility_{window}'] = talib.STDDEV(df_features['close'].values, timeperiod=window)
+            
+            # 计算偏度和峰度
             df_features[f'skew_{window}'] = df_features['close'].rolling(window=window).skew()
             df_features[f'kurtosis_{window}'] = df_features['close'].rolling(window=window).kurt()
             
-            # 最大值和最小值
-            df_features[f'high_rolling_{window}'] = df_features['high'].rolling(window=window).max()
-            df_features[f'low_rolling_{window}'] = df_features['low'].rolling(window=window).min()
+            # 直接使用talib计算最高价和最低价
+            df_features[f'high_{window}'] = talib.MAX(df_features['high'].values, timeperiod=window)
+            df_features[f'low_{window}'] = talib.MIN(df_features['low'].values, timeperiod=window)
             
-            # 价格范围
-            df_features[f'price_range_rolling_{window}'] = df_features[f'high_rolling_{window}'] - df_features[f'low_rolling_{window}']
+            # 计算价格范围
+            df_features[f'price_range_{window}'] = df_features[f'high_{window}'] - df_features[f'low_{window}']
+            df_features[f'price_range_pct_{window}'] = df_features[f'price_range_{window}'] / df_features['close']
             
             # 线性回归斜率 - 修复长度不匹配问题
             for i in range(window):
@@ -639,7 +625,7 @@ if __name__ == "__main__":
         
         # 执行特征工程
         engineer = FeatureEngineer()
-        df_with_features, feature_names = engineer.engineer_all_features(df)
+        df_with_features, feature_names, _ = engineer.engineer_all_features(df)
         
         print(f"\n=== 特征工程结果 ===")
         print(f"生成的特征数量: {len(feature_names)}")

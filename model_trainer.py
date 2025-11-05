@@ -198,8 +198,51 @@ class LightGBMTrainer:
         
         return best_params
     
+    def check_validation_leakage(self, X_train: np.ndarray, X_val: np.ndarray) -> bool:
+        """
+        检查验证集是否存在数据泄漏
+        
+        Args:
+            X_train: 训练特征
+            X_val: 验证特征
+            
+        Returns:
+            bool: 是否存在泄漏
+        """
+        # 检查是否有完全相同的样本
+        train_set = set(tuple(row) for row in X_train)
+        val_set = set(tuple(row) for row in X_val)
+        intersection = train_set.intersection(val_set)
+        
+        if len(intersection) > 0:
+            self.logger.warning(f"验证集存在数据泄漏！发现 {len(intersection)} 个重复样本")
+            return True
+        
+        self.logger.info("验证集检查通过，未发现数据泄漏")
+        return False
+    
+    def calculate_class_weights(self, y_train: np.ndarray) -> List[float]:
+        """
+        计算平衡的类别权重
+        
+        Args:
+            y_train: 训练目标
+            
+        Returns:
+            List[float]: 类别权重列表
+        """
+        # 计算每个类别的样本数量
+        _, counts = np.unique(y_train, return_counts=True)
+        total_samples = len(y_train)
+        
+        # 计算平衡权重
+        weights = total_samples / (len(counts) * counts)
+        
+        self.logger.info(f"类别权重已计算: {weights}")
+        return weights.tolist()
+    
     def train_model(self, X_train: np.ndarray, y_train: np.ndarray, X_val: np.ndarray, y_val: np.ndarray,
-                   feature_names: List[str], optimize: bool = True) -> lgb.Booster:
+                   feature_names: List[str], optimize: bool = True, use_balanced_weight: bool = True) -> lgb.Booster:
         """
         训练LightGBM模型
         
@@ -210,11 +253,15 @@ class LightGBMTrainer:
             y_val: 验证目标
             feature_names: 特征名称列表
             optimize: 是否进行超参数优化
+            use_balanced_weight: 是否使用平衡权重
             
         Returns:
             lgb.Booster: 训练好的模型
         """
         start_time = time.time()
+        
+        # 检查验证集数据泄漏
+        self.check_validation_leakage(X_train, X_val)
         
         # 清理特征名称，移除或替换不支持的特殊字符
         def clean_feature_name(name):
@@ -233,7 +280,7 @@ class LightGBMTrainer:
             'num_class': Config.NUM_CLASS,
             'metric': Config.METRIC,
             'verbosity': Config.VERBOSE,
-            'is_unbalance': Config.IS_UNBALANCE
+            'is_unbalance': not use_balanced_weight  # 如果使用自定义权重，则不需要is_unbalance
         }
         
         # 超参数优化
@@ -255,12 +302,25 @@ class LightGBMTrainer:
                 'min_gain_to_split': 0.0
             })
         
+        # 设置权重参数
+        train_set_params = {'feature_name': clean_feature_names}
+        
+        # 如果使用平衡权重
+        if use_balanced_weight:
+            class_weights = self.calculate_class_weights(y_train)
+            params['class_weight'] = 'balanced'  # 设置为balanced
+            # 为每个样本设置权重
+            sample_weights = np.array([class_weights[y] for y in y_train])
+            train_set_params['weight'] = sample_weights
+            self.logger.info("已启用平衡权重")
+        
         # 创建数据集
-        train_set = lgb.Dataset(X_train, label=y_train, feature_name=clean_feature_names)
+        train_set = lgb.Dataset(X_train, label=y_train, **train_set_params)
         val_set = lgb.Dataset(X_val, label=y_val, reference=train_set, feature_name=clean_feature_names)
         
         # 训练模型
         self.logger.info("开始模型训练")
+        
         self.model = lgb.train(
             params,
             train_set,
@@ -600,7 +660,7 @@ if __name__ == "__main__":
         
         # 特征工程
         engineer = FeatureEngineer()
-        df_with_features, feature_names = engineer.engineer_all_features(df)
+        df_with_features, feature_names, _ = engineer.engineer_all_features(df)
         
         # 分割数据
         train_df, val_df, test_df = loader.split_data(df_with_features)
@@ -615,7 +675,9 @@ if __name__ == "__main__":
         old_trials = Config.OPTUNA_N_TRIALS
         Config.OPTUNA_N_TRIALS = 5  # 测试时减少迭代次数
         
-        model = trainer.train_model(X_train, y_train, X_val, y_val, valid_features, optimize=True)
+        # 使用平衡权重训练
+        model = trainer.train_model(X_train, y_train, X_val, y_val, valid_features, 
+                                   optimize=True, use_balanced_weight=True)
         
         # 恢复原始配置
         Config.OPTUNA_N_TRIALS = old_trials

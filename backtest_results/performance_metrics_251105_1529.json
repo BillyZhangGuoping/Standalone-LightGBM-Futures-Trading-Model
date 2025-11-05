@@ -1,0 +1,25 @@
+{
+  "basic": {
+    "initial_capital": 1000000.0,
+    "final_value": 108044.00873189575,
+    "total_return_pct": -89.19559912681042,
+    "annual_return_pct": -99.99949205993285,
+    "annual_volatility_pct": 67.6193521535154,
+    "sharpe_ratio": -1.4788590673407402,
+    "max_drawdown_pct": 89.19941135334192,
+    "calmar_ratio": -1.1210779369810975,
+    "trading_days": 46
+  },
+  "trade": {
+    "total_trades": 1857,
+    "winning_trades": 128,
+    "losing_trades": 1729,
+    "win_rate": 6.892837910608509,
+    "profit_factor": 0.9318200131633704,
+    "avg_winning_pnl": 516.3864548718218,
+    "avg_losing_pnl": -554.1697404832266,
+    "avg_holding_period_minutes": 32.12277867528272,
+    "max_win_pnl": 11350.67022689989,
+    "max_loss_pnl": -10802.83838280007
+  }
+}

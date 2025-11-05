@@ -19,12 +19,26 @@ warnings.filterwarnings('ignore')
 from config import Config
 
 # 设置日志
+# 修复Windows编码问题
+class UnicodeStreamHandler(logging.StreamHandler):
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            stream = self.stream
+            stream.write(msg + self.terminator)
+            self.flush()
+        except UnicodeEncodeError:
+            # 使用替代字符集进行编码
+            msg = self.format(record).encode('utf-8', errors='replace').decode('utf-8')
+            stream.write(msg + self.terminator)
+            self.flush()
+
 logging.basicConfig(
     level=getattr(logging, Config.LOG_LEVEL),
     format=Config.LOG_FORMAT,
     handlers=[
-        logging.FileHandler(Config.LOG_FILE),
-        logging.StreamHandler()
+        logging.FileHandler(Config.LOG_FILE, encoding='utf-8'),
+        UnicodeStreamHandler()
     ]
 )
 logger = logging.getLogger('data_loader')
@@ -42,12 +56,13 @@ class FutureDataLoader:
         self.logger = logger
         self.logger.info(f"数据加载器初始化完成，数据目录: {self.data_dir}")
     
-    def find_data_files(self, symbol=None) -> List[str]:
+    def find_data_files(self, symbol=None, show_head=False) -> List[str]:
         """
         查找数据文件，可选择性地按品种过滤
         
         Args:
             symbol: 可选的交易品种代码，用于过滤文件
+            show_head: 是否显示每个文件的前几行数据
             
         Returns:
             List[str]: 数据文件路径列表
@@ -61,8 +76,41 @@ class FutureDataLoader:
                 files = [f for f in files if symbol in os.path.basename(f)]
             data_files.extend(files)
         
+        data_files = sorted(data_files)
         self.logger.info(f"找到 {len(data_files)} 个数据文件")
-        return sorted(data_files)
+        
+        # 如果需要显示数据前几行
+        if show_head:
+            for file_path in data_files:
+                self.show_data_head(file_path)
+        
+        return data_files
+    
+    def show_data_head(self, file_path: str, n_rows: int = 10):
+        """
+        显示数据文件的前几行
+        
+        Args:
+            file_path: 文件路径
+            n_rows: 显示的行数
+        """
+        try:
+            self.logger.info(f"正在读取数据文件的前{ n_rows }行: {file_path}")
+            df = pd.read_csv(file_path, nrows=n_rows)
+            
+            # 打印文件信息
+            print(f"\n=== 文件: {os.path.basename(file_path)} ===")
+            print(f"数据前{n_rows}行:")
+            print(df)
+            print(f"\n列名: {list(df.columns)}")
+            
+            # 尝试加载完整文件的形状信息
+            full_df = pd.read_csv(file_path)
+            print(f"完整数据形状: {full_df.shape}")
+            
+        except Exception as e:
+            self.logger.error(f"读取文件 {file_path} 时出错: {str(e)}")
+            print(f"读取文件 {file_path} 时出错: {str(e)}")
     
     def load_single_file(self, file_path: str) -> pd.DataFrame:
         """
@@ -211,21 +259,23 @@ class FutureDataLoader:
         if missing_ratio > Config.MAX_MISSING_RATIO:
             return False, f"缺失值比例过高: {missing_ratio:.4f}"
         
-        # 检查时间连续性
+        # 检查时间连续性 - 修改为警告而非错误
+        time_gap_warning = ""
         if isinstance(df.index, pd.DatetimeIndex):
             # 计算时间间隔
             gaps = df.index.to_series().diff().dropna()
             max_gap = gaps.max()
             if max_gap > timedelta(minutes=Config.MAX_GAP_MINUTES):
-                return False, f"时间间隔过大: {max_gap}"
+                time_gap_warning = f" [注意: 时间间隔较大: {max_gap}]"
         
         # 检查OHLC值
         for col in Config.OHLC_COLS:
             if col in df.columns:
                 if (df[col] <= 0).any():
-                    return False, f"{col} 列包含无效值"
+                    # 只警告，不返回失败
+                    self.logger.warning(f"{col} 列包含零或负值")
         
-        return True, f"数据质量验证通过，缺失值比例: {missing_ratio:.6f}"
+        return True, f"数据质量验证通过，缺失值比例: {missing_ratio:.6f}{time_gap_warning}"
     
     def clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """

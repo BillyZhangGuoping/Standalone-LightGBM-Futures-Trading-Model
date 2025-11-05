@@ -51,14 +51,14 @@ pip install -r requirements.txt
 3. 创建必要的目录结构：
 
 ```bash
-mkdir -p data processed_data models plots backtest_results logs
+mkdir -p raw_data processed_data models plots backtest_results logs
 ```
 
 ## 使用说明
 
 ### 数据准备
 
-1. 将期货K线数据（CSV格式）放入`data`目录
+1. 将期货K线数据（CSV格式）放入`raw_data`目录
 2. 确保数据包含以下列：`datetime`, `open`, `high`, `low`, `close`, `volume`
 
 ### 运行模型

@@ -18,7 +18,7 @@ class BaseConfig:
     PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
     
     # 数据路径配置
-    DATA_DIR = os.path.join(PROJECT_ROOT, '../future_data')
+    DATA_DIR = os.path.join(PROJECT_ROOT, 'raw_data')
     PROCESSED_DATA_DIR = os.path.join(PROJECT_ROOT, 'processed_data_lgbm')
     
     # 输出路径配置
@@ -54,7 +54,7 @@ class DataConfig(BaseConfig):
     
     # 目标变量参数
     LOOKAHEAD_MINUTES = 3  # 预测未来N个分钟/周期，可配置参数，默认值为3
-    TARGET_THRESHOLD_TYPE = 'dynamic'  # 'static' 或 'dynamic'
+    TARGET_THRESHOLD_TYPE = 'static'  # 'static' 或 'dynamic'
     STATIC_THRESHOLD_UP = 0.0005  # 静态上涨阈值
     STATIC_THRESHOLD_DOWN = -0.0005  # 静态下跌阈值
     DYNAMIC_WINDOW = 200  # 动态阈值的滚动窗口

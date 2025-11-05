@@ -117,20 +117,17 @@ def main():
     
     # 1. 数据加载和预处理
     logger.info("\n===== 数据加载和预处理 =====")
-    # 使用用户指定的训练数据文件（使用原始字符串避免转义问题）
-    specified_data_file = r"C:\python_workspace\future_data\fu.SHFE.csv"
-    logger.info(f"使用指定的训练数据文件: {specified_data_file}")
+    # 使用data_loader的默认文件夹加载训练数据
+    data_loader = FutureDataLoader()
+    data_files = data_loader.find_data_files()
     
-    # 初始化数据加载器并手动设置数据文件列表
-    data_dir = os.path.dirname(specified_data_file)
-    data_loader = FutureDataLoader(data_dir=data_dir)
-    data_files = [specified_data_file]
-    
-    if not os.path.exists(specified_data_file):
-        logger.error(f"指定的数据文件不存在: {specified_data_file}")
+    if not data_files:
+        logger.error("没有找到数据文件，请检查数据目录")
         return
     
     logger.info(f"找到 {len(data_files)} 个数据文件")
+    for file_path in data_files:
+        logger.info(f"找到数据文件: {file_path}")
     
     # 加载和预处理所有文件
     df_combined = pd.DataFrame()
