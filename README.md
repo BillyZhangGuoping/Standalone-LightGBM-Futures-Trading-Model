@@ -122,6 +122,8 @@ python main.py --symbol fu2601 --n-trials 20 --signal-threshold 0.2
 
 实现模型的训练、优化和评估：
 - LightGBM模型配置和训练
+- 支持平衡权重（balanced class weight）处理不平衡数据
+- 验证集数据泄漏检查功能
 - Optuna超参数优化
 - 时间序列交叉验证
 - 模型评估和特征重要性分析
@@ -169,7 +171,7 @@ METRIC = 'multi_logloss'
 VERBOSE = 100
 NUM_BOOST_ROUND = 10000
 EARLY_STOPPING_ROUNDS = 100
-IS_UNBALANCE = True
+IS_UNBALANCE = True  # 可以通过use_balanced_weight参数调整
 
 # Optuna超参数优化
 OPTUNA_N_TRIALS = 100
