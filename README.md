@@ -81,6 +81,8 @@ python main.py
 --signal-threshold  # 信号阈值，默认: 0.0
 --save-results      # 是否保存结果，默认: True
 --plot-results      # 是否绘制结果图表，默认: True
+--balanced-weight   # 是否使用平衡权重，默认: True
+--check-leakage     # 是否检查验证集数据泄漏，默认: True
 ```
 
 示例：
@@ -137,6 +139,26 @@ python main.py --symbol fu2601 --n-trials 20 --signal-threshold 0.2
 - 止损止盈策略实现
 - 性能指标计算（收益率、夏普比率、最大回撤等）
 - 可视化和报告生成
+
+### 模型训练方法参数说明
+
+`LightGBMTrainer`类的`train_model`方法支持以下关键参数：
+
+- **X_train, y_train**: 训练集特征和目标变量
+- **X_val, y_val**: 验证集特征和目标变量
+- **feature_names**: 特征名称列表
+- **optimize**: 是否进行超参数优化，默认True
+- **use_balanced_weight**: 是否使用平衡权重处理不平衡数据，默认True
+  - 当设置为True时，系统会根据类别分布自动计算和应用权重
+  - 有助于提高少数类别的预测性能，减少类别不平衡的影响
+
+### 数据泄漏检查功能
+
+系统自动执行验证集数据泄漏检查：
+- 检测训练集和验证集之间的重复数据
+- 确保验证集数据不会在训练过程中被意外使用
+- 在发现潜在泄漏时提供详细警告日志
+- 有助于提高模型评估的可靠性和泛化能力
 
 ## 配置指南
 
