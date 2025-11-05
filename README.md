@@ -1,8 +1,8 @@
-# 生产级LightGBM期货交易信号预测模型
+# LightGBM期货交易信号预测模型
 
 ## 项目概述
 
-本项目实现了一个基于LightGBM的期货交易信号预测系统，能够预测未来3分钟的价格方向（大涨/大跌/震荡）。系统采用了完整的机器学习工作流程，包括数据预处理、特征工程、模型训练、超参数优化、交叉验证和交易回测。
+本项目实现了一个基于LightGBM的期货交易信号预测系统，目标是预测未来N个周期后的价格方向（大涨/大跌/震荡）。系统采用了完整的机器学习工作流程，包括数据预处理、特征工程、模型训练、超参数优化、交叉验证和交易回测。
 
 ### 主要功能
 
@@ -44,7 +44,7 @@
 2. 安装依赖库：
 
 ```bash
-cd c:\python_workspace\Processor
+cd  LightGBM_Prediction_Singal
 pip install -r requirements.txt
 ```
 
@@ -58,7 +58,7 @@ mkdir -p data processed_data models plots backtest_results logs
 
 ### 数据准备
 
-1. 将期货1分钟K线数据（CSV格式）放入`data`目录
+1. 将期货K线数据（CSV格式）放入`data`目录
 2. 确保数据包含以下列：`datetime`, `open`, `high`, `low`, `close`, `volume`
 
 ### 运行模型
@@ -144,15 +144,17 @@ python main.py --symbol fu2601 --n-trials 20 --signal-threshold 0.2
 
 ```python
 # 目标变量定义
-TARGET_WINDOW = 3  # 未来3分钟
-UP_THRESHOLD = 0.15  # 上涨阈值（百分比）
-DOWN_THRESHOLD = 0.15  # 下跌阈值（百分比）
-USE_DYNAMIC_THRESHOLD = True  # 使用动态阈值
-DYNAMIC_THRESHOLD_WINDOW = 200  # 动态阈值计算窗口
+LOOKAHEAD_MINUTES = 3  # 预测未来3分钟
+TARGET_THRESHOLD_TYPE = 'dynamic'  # 'static' 或 'dynamic'
+STATIC_THRESHOLD_UP = 0.0005  # 静态上涨阈值
+STATIC_THRESHOLD_DOWN = -0.0005  # 静态下跌阈值
+DYNAMIC_WINDOW = 200  # 动态阈值的滚动窗口
+DYNAMIC_QUANTILE_UP = 0.75  # 上涨阈值分位数
+DYNAMIC_QUANTILE_DOWN = 0.25  # 下跌阈值分位数
 
 # 数据分割
 TRAIN_RATIO = 0.7  # 训练集比例
-VALID_RATIO = 0.15  # 验证集比例
+VAL_RATIO = 0.15  # 验证集比例
 TEST_RATIO = 0.15  # 测试集比例
 ```
 
@@ -162,27 +164,30 @@ TEST_RATIO = 0.15  # 测试集比例
 # LightGBM参数
 BOOSTER_TYPE = 'gbdt'
 OBJECTIVE = 'multiclass'
-METRIC = 'multi_logloss'
 NUM_CLASS = 3
-NUM_BOOST_ROUND = 1000
+METRIC = 'multi_logloss'
+VERBOSE = 100
+NUM_BOOST_ROUND = 10000
 EARLY_STOPPING_ROUNDS = 100
 IS_UNBALANCE = True
 
 # Optuna超参数优化
 OPTUNA_N_TRIALS = 100
 OPTUNA_SEED = 42
+MODEL_VERSION = 'v1.0'
 ```
 
 ### 回测配置
 
 ```python
 # 回测参数
-INITIAL_CAPITAL = 100000.0  # 初始资金
-TRANSACTION_COST = 0.0002  # 交易成本率（0.02%）
-SLIPPAGE = 0.01  # 滑点
-STOP_LOSS = 2.0  # 止损百分比
-TAKE_PROFIT = 5.0  # 止盈百分比
-MAX_POSITION_SIZE = 0.1  # 最大仓位比例（10%）
+INITIAL_CAPITAL = 1000000.0  # 初始资金
+POSITION_SIZE_RATIO = 0.1  # 持仓比例
+COMMISSION_RATE = 0.0001  # 手续费率
+SLIPPAGE_RATE = 0.00005  # 滑点率
+TAKE_PROFIT_RATIO = 0.002  # 止盈比例
+STOP_LOSS_RATIO = 0.001  # 止损比例
+MIN_CONFIDENCE = 0.55  # 最小置信度
 ```
 
 ## 性能指标解释
@@ -209,23 +214,23 @@ MAX_POSITION_SIZE = 0.1  # 最大仓位比例（10%）
 
 ### 模型输出
 
-- 训练好的模型文件：`models/lgbm_model_{version}_{timestamp}.txt`
-- 模型元数据：`models/lgbm_model_{version}_{timestamp}_metadata.pkl`
+- 训练好的模型文件：`models_lgbm/lgbm_model_{version}_{timestamp}.txt`
+- 模型元数据：`models_lgbm/lgbm_model_{version}_{timestamp}_metadata.pkl`
 
 ### 可视化输出
 
-- 特征重要性：`plots/feature_importance.png`
-- 学习曲线：`plots/learning_curve.png`
-- 混淆矩阵：`plots/confusion_matrix.png`
+- 特征重要性：`plots_lgbm/feature_importance.png`
+- 学习曲线：`plots_lgbm/learning_curve.png`
+- 混淆矩阵：`plots_lgbm/confusion_matrix.png`
 
 ### 回测输出
 
-- 资产价值曲线：`backtest_results/asset_value.png`
-- 回撤曲线：`backtest_results/drawdown.png`
-- 信号和持仓图表：`backtest_results/signals_and_positions.png`
-- 交易分布：`backtest_results/trade_distributions.png`
-- 性能报告：`backtest_results/performance_report_{timestamp}.txt`
-- 交易历史：`backtest_results/trade_history_{timestamp}.csv`
+- 资产价值曲线：`backtest_results_lgbm/asset_value.png`
+- 回撤曲线：`backtest_results_lgbm/drawdown.png`
+- 信号和持仓图表：`backtest_results_lgbm/signals_and_positions.png`
+- 交易分布：`backtest_results_lgbm/trade_distributions.png`
+- 性能报告：`backtest_results_lgbm/performance_report_{timestamp}.txt`
+- 交易历史：`backtest_results_lgbm/trade_history_{timestamp}.csv`
 
 ## 注意事项和最佳实践
 
@@ -256,5 +261,8 @@ A: 系统支持多品种数据处理，但建议分别训练模型以适应不�
 本项目仅供研究和学习使用，不构成投资建议。
 
 ## 联系方式
+
+- 项目维护者：[Billy, Zhang Guoping]
+- 邮箱：[zhanggp@gmail.com]
 
 如有问题或建议，请随时提出反馈。

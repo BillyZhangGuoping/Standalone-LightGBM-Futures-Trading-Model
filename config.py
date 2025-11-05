@@ -53,7 +53,7 @@ class DataConfig(BaseConfig):
     MAX_GAP_MINUTES = 30  # 最大时间间隔（分钟）
     
     # 目标变量参数
-    LOOKAHEAD_MINUTES = 3  # 预测未来3分钟
+    LOOKAHEAD_MINUTES = 3  # 预测未来N个分钟/周期，可配置参数，默认值为3
     TARGET_THRESHOLD_TYPE = 'dynamic'  # 'static' 或 'dynamic'
     STATIC_THRESHOLD_UP = 0.0005  # 静态上涨阈值
     STATIC_THRESHOLD_DOWN = -0.0005  # 静态下跌阈值
