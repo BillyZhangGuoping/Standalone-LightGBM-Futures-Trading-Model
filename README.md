@@ -28,7 +28,6 @@
 ├── backtest_trading_strategy.py  # 基于LightGBM模型的交易回测策略
 ├── config.py         # 配置管理模块
 ├── main.py           # 主程序，整合各模块
-├── original_trading_strategy.py  # 原始交易策略参考
 ├── trading_strategy.py  # 交易策略基础框架
 ├── requirements.txt  # 依赖库列表
 └── README.md         # 项目文档
