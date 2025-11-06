@@ -8,6 +8,9 @@
 *.pyo
 *.gitignore
 
+# 排除特定文件
+original_trading_strategy.py
+
 # Python缓存目录
 __pycache__/
 
@@ -25,6 +28,7 @@ backtest_results/
 
 # 原始数据目录
 raw_data/
+backtest_data/
 
 # 图片目录
 plots_lgbm/
