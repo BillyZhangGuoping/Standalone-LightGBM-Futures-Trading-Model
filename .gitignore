@@ -21,6 +21,7 @@ models_lgbm/
 # 结果目录
 backtest_results_lgbm/
 processed_data_lgbm/
+backtest_results/
 
 # 原始数据目录
 raw_data/

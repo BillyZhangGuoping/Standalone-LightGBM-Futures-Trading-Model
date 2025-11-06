@@ -91,7 +91,7 @@ class FeatureConfig(BaseConfig):
     BB_STD = 2  # 标准差倍数
     
     # 波动率参数
-    VOLATILITY_WINDOWS = [5, 10, 20]  # 波动率窗口
+    VOLATILITY_WINDOWS = [5, 10, 20, 30]  # 波动率窗口，增加30分钟ATR
     
     # 动量参数
     MOMENTUM_WINDOWS = [5, 10, 20]  # 动量窗口
@@ -103,7 +103,7 @@ class FeatureConfig(BaseConfig):
     STAT_WINDOWS = [10, 20, 50]  # 统计特征窗口
     
     # 滞后特征参数
-    LAG_FEATURES = [1, 2, 3, 5, 10]  # 滞后步长
+    LAG_FEATURES = [3, 6, 12, 24, 48]  # 滞后步长
     
     # 特征选择参数
     FEATURE_IMPORTANCE_THRESHOLD = 0.001  # 特征重要性阈值
@@ -122,24 +122,31 @@ class ModelConfig(BaseConfig):
     VERBOSE = 100  # 日志输出频率
     
     # 训练参数
-    NUM_BOOST_ROUND = 10000  # 最大迭代次数
-    VALIDATION_FRACTION = 0.2  # 验证集比例
+    NUM_BOOST_ROUND = 5000  # 减少最大迭代次数
+    VALIDATION_FRACTION = 0.25  # 增加验证集比例
     
     # 类别平衡参数
-    IS_UNBALANCE = True  # 是否处理不平衡数据
+    IS_UNBALANCE = False  # 禁用自动不平衡处理，使用自定义权重
+    ENABLE_RANDOM_SEED = True  # 启用随机种子保证可复现性
+    RANDOM_SEED = 42  # 随机种子值
     
-    # Optuna超参数搜索范围
+    # Optuna超参数搜索范围 - 增加正则化和控制过拟合
     OPTUNA_SEARCH_SPACE = {
-        'num_leaves': {'low': 16, 'high': 128, 'step': 8},
-        'learning_rate': {'low': 0.005, 'high': 0.1, 'log': True},
-        'feature_fraction': {'low': 0.6, 'high': 1.0},
-        'bagging_fraction': {'low': 0.6, 'high': 1.0},
-        'bagging_freq': {'low': 1, 'high': 10},
-        'lambda_l1': {'low': 0.0, 'high': 10.0, 'log': True},
-        'lambda_l2': {'low': 0.0, 'high': 10.0, 'log': True},
-        'min_data_in_leaf': {'low': 10, 'high': 100, 'step': 5},
-        'min_gain_to_split': {'low': 0.0, 'high': 1.0},
+        'num_leaves': {'low': 8, 'high': 64, 'step': 4},  # 减少最大叶节点数
+        'learning_rate': {'low': 0.005, 'high': 0.05, 'log': True},  # 降低学习率上限
+        'feature_fraction': {'low': 0.5, 'high': 0.9},  # 强制特征子集采样
+        'bagging_fraction': {'low': 0.6, 'high': 0.9},  # 强制数据子集采样
+        'bagging_freq': {'low': 5, 'high': 15},  # 增加采样频率
+        'lambda_l1': {'low': 0.1, 'high': 20.0, 'log': True},  # 增加L1正则化下限
+        'lambda_l2': {'low': 0.1, 'high': 20.0, 'log': True},  # 增加L2正则化下限
+        'min_data_in_leaf': {'low': 30, 'high': 150, 'step': 10},  # 增加叶节点最小数据量
+        'min_gain_to_split': {'low': 0.001, 'high': 0.1},  # 增加最小分裂增益
     }
+    
+    # 过拟合控制参数
+    MAX_DEPTH = 15  # 最大树深度
+    EARLY_STOPPING_ROUNDS = 50  # 减少早停轮数，更早停止
+    VERBOSE = 200  # 减少日志输出频率
     
     # Optuna优化参数
     OPTUNA_N_TRIALS = 100  # 试验次数
@@ -155,7 +162,7 @@ class ModelConfig(BaseConfig):
 # ==========================
 class BacktestConfig(BaseConfig):
     # 交易参数
-    INITIAL_CAPITAL = 1000000.0  # 初始资金
+    INITIAL_CAPITAL = 10000.0  # 初始资金
     POSITION_SIZE_RATIO = 0.1  # 持仓比例
     COMMISSION_RATE = 0.0001  # 手续费率
     SLIPPAGE_RATE = 0.00005  # 滑点率
@@ -175,7 +182,7 @@ class BacktestConfig(BaseConfig):
     
     # 绩效评估参数
     RISK_FREE_RATE = 0.02  # 无风险收益率
-    MAX_DRAWDOWN_THRESHOLD = 0.2  # 最大回撤阈值
+    MAX_DRAWDOWN_THRESHOLD = 0.3  # 最大回撤阈值
     
     # 可视化参数
     PLOT_TRADES = True  # 是否绘制交易点

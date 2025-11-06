@@ -20,12 +20,16 @@
 系统采用模块化设计，各组件之间松耦合，便于维护和扩展：
 
 ```
+├── backtest_data/     # 回测数据目录
 ├── data_loader.py    # 数据加载和预处理模块
 ├── feature_engineer.py  # 特征工程模块
 ├── model_trainer.py  # 模型训练和评估模块
 ├── backtester.py     # 交易回测和性能分析模块
+├── backtest_trading_strategy.py  # 基于LightGBM模型的交易回测策略
 ├── config.py         # 配置管理模块
 ├── main.py           # 主程序，整合各模块
+├── original_trading_strategy.py  # 原始交易策略参考
+├── trading_strategy.py  # 交易策略基础框架
 ├── requirements.txt  # 依赖库列表
 └── README.md         # 项目文档
 ```
@@ -139,6 +143,16 @@ python main.py --symbol fu2601 --n-trials 20 --signal-threshold 0.2
 - 止损止盈策略实现
 - 性能指标计算（收益率、夏普比率、最大回撤等）
 - 可视化和报告生成
+
+### 6. 交易回测策略 (backtest_trading_strategy.py)
+
+专门用于基于LightGBM模型预测结果的交易回测：
+- 加载预训练的LightGBM模型进行预测
+- 生成50个关键技术指标特征
+- 支持多置信度阈值的信号过滤
+- 实现完整的交易逻辑和资金管理
+- 动态止盈止损策略
+- 生成详细的性能分析报告和图表
 
 ### 模型训练方法参数说明
 

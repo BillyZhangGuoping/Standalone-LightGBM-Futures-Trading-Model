@@ -1,14 +1,12 @@
 import numpy as np
 import pandas as pd
-import torch
 import pickle
-import joblib
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.preprocessing import StandardScaler
 import os
 from datetime import datetime, time
 import math
+import lightgbm as lgb
 
 # 确保中文显示
 plt.rcParams['font.sans-serif'] = ['SimHei']
@@ -17,110 +15,7 @@ plt.rcParams['axes.unicode_minus'] = False
 # 创建目录
 os.makedirs('./backtest_results', exist_ok=True)
 
-class LSTMTradingModel(torch.nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layers, output_dim, dropout=0.2):
-        super(LSTMTradingModel, self).__init__()
-        self.hidden_dim = hidden_dim
-        self.num_layers = num_layers
-        
-        # 输入Batch Normalization
-        self.input_bn = torch.nn.BatchNorm1d(input_dim)
-        
-        # LSTM层
-        self.lstm = torch.nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True, dropout=dropout)
-        
-        # 全连接层
-        self.fc1 = torch.nn.Linear(hidden_dim, hidden_dim)
-        self.fc2 = torch.nn.Linear(hidden_dim, output_dim)
-        
-        # Dropout层
-        self.dropout = torch.nn.Dropout(dropout)
-        
-        # Batch Normalization层
-        self.bn1 = torch.nn.BatchNorm1d(hidden_dim)
-        self.bn2 = torch.nn.BatchNorm1d(hidden_dim)
-    
-    def forward(self, x):
-        batch_size, seq_len, input_dim = x.size()
-        
-        # 输入Batch Normalization
-        x = x.permute(0, 2, 1).contiguous()  # (batch, input_dim, seq_len)
-        x = self.input_bn(x)
-        x = x.permute(0, 2, 1).contiguous()  # (batch, seq_len, input_dim)
-        
-        # 初始化隐藏状态和细胞状态
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
-        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
-        
-        # LSTM前向传播
-        out, _ = self.lstm(x, (h0, c0))
-        
-        # 取最后一个时间步的输出
-        out = out[:, -1, :]
-        
-        # 第一个全连接层 + BN + Dropout
-        out = self.fc1(out)
-        out = self.bn1(out)
-        out = torch.relu(out)
-        out = self.dropout(out)
-        
-        # 第二个全连接层 + BN + Dropout
-        out = self.fc2(out)
-        
-        return out
-
-# 定义EnhancedLSTMTradingModel类，用于加载保存的模型
-class EnhancedLSTMTradingModel(torch.nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layers, output_dim, dropout=0.2):
-        super(EnhancedLSTMTradingModel, self).__init__()
-        self.hidden_dim = hidden_dim
-        self.num_layers = num_layers
-        
-        # 输入Batch Normalization
-        self.input_bn = torch.nn.BatchNorm1d(input_dim)
-        
-        # LSTM层
-        self.lstm = torch.nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True, dropout=dropout)
-        
-        # 全连接层 - 根据错误信息，中间层维度应该是64
-        self.fc1 = torch.nn.Linear(hidden_dim, 64)
-        self.fc2 = torch.nn.Linear(64, output_dim)
-        
-        # Dropout层
-        self.dropout = torch.nn.Dropout(dropout)
-        
-        # Batch Normalization层
-        self.bn1 = torch.nn.BatchNorm1d(hidden_dim)
-        self.bn2 = torch.nn.BatchNorm1d(64)  # 中间层维度为64
-    
-    def forward(self, x):
-        batch_size, seq_len, input_dim = x.size()
-        
-        # 输入Batch Normalization
-        x = x.permute(0, 2, 1).contiguous()  # (batch, input_dim, seq_len)
-        x = self.input_bn(x)
-        x = x.permute(0, 2, 1).contiguous()  # (batch, seq_len, input_dim)
-        
-        # 初始化隐藏状态和细胞状态
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
-        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
-        
-        # LSTM前向传播
-        out, _ = self.lstm(x, (h0, c0))
-        
-        # 取最后一个时间步的输出
-        out = out[:, -1, :]
-        
-        # 第一个全连接层 + BN + Dropout
-        out = self.fc1(out)
-        out = self.bn2(out)  # 使用bn2，维度为64
-        out = torch.relu(out)
-        out = self.dropout(out)
-        
-        # 第二个全连接层
-        out = self.fc2(out)
-        
-        return out
+# 仅使用LightGBM模型进行回测，不再支持LSTM模型
 
 def load_data(file_path):
     """加载期货数据"""
@@ -133,59 +28,138 @@ def load_data(file_path):
     return df
 
 def preprocess_data(df, config):
-    """数据预处理 - 与训练时保持一致"""
+    """数据预处理 - 生成与LightGBM模型训练时相同的50个特征"""
     # 复制数据以避免修改原始数据
     df_processed = df.copy()
     
-    # 计算基本价格特征
-    df_processed['high_low_ratio'] = df_processed['high'] / df_processed['low']
-    df_processed['open_close_diff'] = df_processed['open'] - df_processed['close']
+    # 确保时间列为datetime类型
+    if 'bob' in df_processed.columns:
+        df_processed['bob'] = pd.to_datetime(df_processed['bob'])
+    elif 'datetime' in df_processed.columns:
+        df_processed['bob'] = pd.to_datetime(df_processed['datetime'])
+    
+    # 时间特征
+    if 'bob' in df_processed.columns:
+        df_processed['hour'] = df_processed['bob'].dt.hour
+        df_processed['minute'] = df_processed['bob'].dt.minute
+        df_processed['day_of_month'] = df_processed['bob'].dt.day
+        # 交易时段特征
+        df_processed['morning_session'] = ((df_processed['hour'] >= 9) & 
+                                           (df_processed['hour'] < 11) | 
+                                           (df_processed['hour'] == 11) & 
+                                           (df_processed['minute'] <= 30)).astype(int)
+        df_processed['afternoon_session'] = ((df_processed['hour'] >= 13) & 
+                                             (df_processed['hour'] < 15)).astype(int)
+    else:
+        # 如果没有时间列，创建默认值
+        df_processed['hour'] = 0
+        df_processed['minute'] = 0
+        df_processed['day_of_month'] = 1
+        df_processed['morning_session'] = 0
+        df_processed['afternoon_session'] = 0
+    
+    # 价格基本特征
     df_processed['price_range'] = df_processed['high'] - df_processed['low']
+    df_processed['price_range_50'] = df_processed['price_range'].rolling(window=50).mean()
+    df_processed['price_range_pct_10'] = df_processed['price_range'] / df_processed['close'].rolling(window=10).mean()
+    df_processed['high_pct'] = (df_processed['high'] - df_processed['close'].shift(1)) / df_processed['close'].shift(1)
+    df_processed['low_pct'] = (df_processed['low'] - df_processed['close'].shift(1)) / df_processed['close'].shift(1)
     
-    # 计算收益率
-    for i in [1, 3, 5, 10, 20]:
-        df_processed[f'returns_{i}'] = df_processed['close'].pct_change(i)
+    # 收益率特征
+    df_processed['return_1'] = df_processed['close'].pct_change(1)
+    df_processed['return_10'] = df_processed['close'].pct_change(10)
+    # 收益率滞后特征
+    df_processed['return_lag_6'] = df_processed['close'].pct_change(6).shift(6)
+    df_processed['return_lag_24'] = df_processed['close'].pct_change(24).shift(24)
+    df_processed['return_lag_48'] = df_processed['close'].pct_change(48).shift(48)
     
-    # 计算移动平均线
-    for i in [5, 10, 20, 50]:
-        df_processed[f'ma_{i}'] = df_processed['close'].rolling(window=i).mean()
-        df_processed[f'ma_diff_{i}'] = df_processed['close'] - df_processed[f'ma_{i}']
-        df_processed[f'ma_ratio_{i}'] = df_processed['close'] / df_processed[f'ma_{i}']
+    # 动量特征
+    df_processed['momentum_5'] = df_processed['close'] - df_processed['close'].shift(5)
+    df_processed['momentum_pct_20'] = (df_processed['close'] - df_processed['close'].shift(20)) / df_processed['close'].shift(20)
     
-    # 计算相对强弱指数(RSI)
-    delta = df_processed['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    df_processed['rsi'] = 100 - (100 / (1 + rs))
+    # 波动率特征
+    df_processed['volatility_20'] = df_processed['return_1'].rolling(window=20).std() * np.sqrt(20)
+    df_processed['volatility_50'] = df_processed['return_1'].rolling(window=50).std() * np.sqrt(50)
+    df_processed['realized_vol_10'] = df_processed['return_1'].rolling(window=10).std() * np.sqrt(10)
     
-    # MACD
+    # 统计特征
+    df_processed['kurtosis_50'] = df_processed['return_1'].rolling(window=50).kurt()
+    df_processed['skew_10'] = df_processed['return_1'].rolling(window=10).skew()
+    df_processed['skew_50'] = df_processed['return_1'].rolling(window=50).skew()
+    
+    # 移动平均线特征
+    df_processed['ma_5'] = df_processed['close'].rolling(window=5).mean()
+    df_processed['ma_10'] = df_processed['close'].rolling(window=10).mean()
+    df_processed['ma_20'] = df_processed['close'].rolling(window=20).mean()
+    df_processed['ma_diff_5'] = df_processed['close'] - df_processed['ma_5']
+    df_processed['ma_diff_10'] = df_processed['close'] - df_processed['ma_10']
+    df_processed['ma_diff_pct_20'] = (df_processed['close'] - df_processed['ma_20']) / df_processed['ma_20']
+    
+    # 移动平均线斜率
+    df_processed['slope_10'] = df_processed['ma_10'].diff(10) / 10
+    df_processed['slope_50'] = df_processed['ma_50'].diff(50) / 50 if 'ma_50' in df_processed.columns else 0
+    df_processed['ma_slope_5'] = df_processed['ma_5'].diff()
+    df_processed['ma_slope_10'] = df_processed['ma_10'].diff()
+    
+    # RSI特征
+    # RSI 6
+    delta_6 = df_processed['close'].diff()
+    gain_6 = (delta_6.where(delta_6 > 0, 0)).rolling(window=6).mean()
+    loss_6 = (-delta_6.where(delta_6 < 0, 0)).rolling(window=6).mean()
+    rs_6 = gain_6 / loss_6
+    df_processed['rsi_6'] = 100 - (100 / (1 + rs_6))
+    # RSI 14
+    delta_14 = df_processed['close'].diff()
+    gain_14 = (delta_14.where(delta_14 > 0, 0)).rolling(window=14).mean()
+    loss_14 = (-delta_14.where(delta_14 < 0, 0)).rolling(window=14).mean()
+    rs_14 = gain_14 / loss_14
+    df_processed['rsi_14'] = 100 - (100 / (1 + rs_14))
+    # RSI移动平均
+    df_processed['rsi_ma_14'] = df_processed['rsi_14'].rolling(window=14).mean()
+    # RSI趋势
+    df_processed['rsi_trend_6'] = df_processed['rsi_6'].diff(6)
+    df_processed['rsi_trend_14'] = df_processed['rsi_14'].diff(14)
+    df_processed['rsi_trend_21'] = df_processed['rsi_14'].diff(21)  # 使用rsi_14计算21周期趋势
+    
+    # MACD特征
     exp1 = df_processed['close'].ewm(span=12, adjust=False).mean()
     exp2 = df_processed['close'].ewm(span=26, adjust=False).mean()
-    df_processed['macd'] = exp1 - exp2
-    df_processed['signal_line'] = df_processed['macd'].ewm(span=9, adjust=False).mean()
-    df_processed['macd_diff'] = df_processed['macd'] - df_processed['signal_line']
+    df_processed['macd_line'] = exp1 - exp2
+    df_processed['signal_line'] = df_processed['macd_line'].ewm(span=9, adjust=False).mean()
+    df_processed['macd_hist'] = df_processed['macd_line'] - df_processed['signal_line']
+    df_processed['macd_hist_ma'] = df_processed['macd_hist'].rolling(window=5).mean()
+    df_processed['macd_hist_diff'] = df_processed['macd_hist'].diff()
+    
+    # 布林带特征
+    rolling_mean = df_processed['close'].rolling(window=20).mean()
+    rolling_std = df_processed['close'].rolling(window=20).std()
+    df_processed['bb_upper_20'] = rolling_mean + (rolling_std * 2)
+    df_processed['bb_lower_20'] = rolling_mean - (rolling_std * 2)
+    df_processed['bb_upper_break_20'] = (df_processed['high'] > df_processed['bb_upper_20']).astype(int)
+    df_processed['bb_lower_break_20'] = (df_processed['low'] < df_processed['bb_lower_20']).astype(int)
+    
+    # ATR特征
+    high_low = df_processed['high'] - df_processed['low']
+    high_close = np.abs(df_processed['high'] - df_processed['close'].shift(1))
+    low_close = np.abs(df_processed['low'] - df_processed['close'].shift(1))
+    ranges = pd.concat([high_low, high_close, low_close], axis=1)
+    true_range = np.max(ranges, axis=1)
+    df_processed['atr_5'] = true_range.rolling(window=5).mean()
+    df_processed['atr_pct_10'] = df_processed['atr_5'] / df_processed['close'].rolling(window=10).mean()
+    df_processed['atr_pct_30'] = df_processed['atr_5'] / df_processed['close'].rolling(window=30).mean()
     
     # 交易量特征
-    df_processed['volume_pct_change'] = df_processed['volume'].pct_change()
     df_processed['volume_ma_5'] = df_processed['volume'].rolling(window=5).mean()
-    df_processed['volume_ratio'] = df_processed['volume'] / df_processed['volume_ma_5']
+    df_processed['volume_diff_pct_10'] = df_processed['volume'].pct_change(10)
+    # 计算成交额
+    df_processed['amount'] = df_processed['close'] * df_processed['volume']
     
     # 持仓量特征
-    df_processed['position_pct_change'] = df_processed['position'].pct_change()
-    df_processed['position_ma_5'] = df_processed['position'].rolling(window=5).mean()
-    df_processed['position_ratio'] = df_processed['position'] / df_processed['position_ma_5']
-    
-    # 高低开收特征
-    df_processed['oc_diff'] = df_processed['open'] - df_processed['close']
-    df_processed['hl_ratio'] = df_processed['high'] / df_processed['low']
-    df_processed['oc_ratio'] = df_processed['open'] / df_processed['close']
-    
-    # 创建目标变量 - 使用未来5分钟的价格变化作为预测目标
-    df_processed['future_returns'] = df_processed['close'].pct_change(5).shift(-5)
-    df_processed['target'] = 0
-    df_processed.loc[df_processed['future_returns'] > 0.0005, 'target'] = 1  # 多单
-    df_processed.loc[df_processed['future_returns'] < -0.0005, 'target'] = -1  # 空单
+    if 'position' in df_processed.columns:
+        df_processed['position'] = df_processed['position']
+    else:
+        # 如果没有持仓量数据，使用默认值
+        df_processed['position'] = df_processed['volume'].mean()
     
     # 填充缺失值 - 只对数值列应用中位数填充
     numeric_cols = df_processed.select_dtypes(include=[np.number]).columns
@@ -193,61 +167,7 @@ def preprocess_data(df, config):
     
     return df_processed
 
-def create_sequences(data, seq_length, feature_columns):
-    """创建时间序列数据"""
-    X = []
-    for i in range(len(data) - seq_length + 1):
-        X.append(data[feature_columns].iloc[i:i+seq_length].values)
-    return np.array(X)
-
-def load_model(model_path, device):
-    """加载训练好的模型"""
-    print(f"加载模型: {model_path}")
-    try:
-        # 尝试直接加载完整模型文件
-        model = torch.load(model_path, map_location=device, weights_only=False)
-        model.eval()
-        print(f"成功加载完整模型")
-        return model
-    except Exception as e:
-        print(f"直接加载模型失败: {e}")
-        try:
-            # 如果直接加载失败，尝试使用状态字典方式
-            # 创建模型实例
-            input_dim = 38
-            hidden_dim = 128
-            num_layers = 3
-            output_dim = 3
-            dropout = 0.2
-            
-            model = EnhancedLSTMTradingModel(input_dim, hidden_dim, num_layers, output_dim, dropout).to(device)
-            
-            # 加载状态字典
-            state_dict = torch.load(model_path, map_location=device, weights_only=True)
-            model.load_state_dict(state_dict)
-            model.eval()
-            print(f"成功加载状态字典模型")
-            return model
-        except Exception as inner_e:
-            print(f"加载状态字典也失败: {inner_e}")
-            raise
-
-def load_scaler(scaler_path):
-    """加载特征缩放器"""
-    print(f"加载缩放器: {scaler_path}")
-    try:
-        # 尝试使用joblib加载（通常训练脚本使用joblib）
-        scaler = joblib.load(scaler_path)
-    except:
-        try:
-            # 尝试使用pickle加载
-            with open(scaler_path, 'rb') as f:
-                scaler = pickle.load(f)
-        except:
-            # 如果都失败，创建一个新的缩放器
-            print("无法加载缩放器，创建新的缩放器")
-            scaler = StandardScaler()
-    return scaler
+# LightGBM不需要创建序列数据和加载PyTorch模型及缩放器
 
 def is_restricted_time(dt):
     """检查是否为限制开仓时间"""
@@ -293,6 +213,10 @@ def backtest_strategy(df, predictions, config):
     last_entry_price = 0
     zero_prediction_start_index = -1  # 记录预测为0的起始位置
     consecutive_zero_count = 0  # 记录预测为0的连续K线数量
+    position_enter_time = 0  # 记录持仓进入的索引位置
+    
+    # 策略参数
+    LOOKAHEAD = 3  # 持有时间（bar数量）
     
     # 执行回测
     for i in range(len(backtest_df)):
@@ -316,10 +240,37 @@ def backtest_strategy(df, predictions, config):
                 consecutive_zeros = 0
                 zero_prediction_start_index = -1
                 consecutive_zero_count = 0
+                position_enter_time = 0
             continue
         
         # 如果有持仓
         if current_position != 0:
+            # 检查是否到达强制平仓时间（持有3个bar）
+            force_close = False
+            if i - position_enter_time >= LOOKAHEAD:
+                force_close = True
+            
+            # 反向信号立即平仓
+            if pred != 0 and pred != current_position:
+                # 平仓
+                backtest_df.iloc[i, backtest_df.columns.get_loc('signal')] = -current_position
+                backtest_df.iloc[i, backtest_df.columns.get_loc('position')] = 0
+                # 计算盈亏
+                pnl = (close_price - last_entry_price) * current_position
+                backtest_df.iloc[i, backtest_df.columns.get_loc('pnl')] = pnl
+                last_entry_price = 0
+                current_position = 0
+                consecutive_zeros = 0
+                zero_prediction_start_index = -1
+                consecutive_zero_count = 0
+                position_enter_time = 0
+                continue
+            
+            # 同向信号，延长持仓时间
+            if pred != 0 and pred == current_position:
+                # 重置持仓时间
+                position_enter_time = i
+            
             # 动态计算止盈价
             if pred == 0:
                 # 记录连续预测为0的K线数量
@@ -332,14 +283,15 @@ def backtest_strategy(df, predictions, config):
                 consecutive_zero_count = 0
                 zero_prediction_start_index = -1
             
-            # 多仓动态止盈条件
+            # 动态止盈条件：使用30分钟ATR和价格的最大值
             if current_position == 1:
-                # 计算动态止盈价：(开仓价+3) - min(连续预测为0的K线数, 2)，最低为开仓价+1
-                adjustment = min(consecutive_zero_count, 2)  # 最多调整2
-                dynamic_take_profit = last_entry_price + 3 - adjustment
-                dynamic_take_profit = max(dynamic_take_profit, last_entry_price + 1)  # 最低为开仓价+1
+                # 获取30分钟ATR值（如果存在）
+                atr_30 = backtest_df.iloc[i].get('atr_30', 0) if i < len(backtest_df) else 0
+                # 动态止盈价 = 开仓价 + max(30分钟ATR, 3个价格)
+                take_profit_amount = max(atr_30, 3)
+                take_profit_price = last_entry_price + take_profit_amount
                 
-                if high_price > dynamic_take_profit:
+                if high_price >= take_profit_price:
                     # 平仓
                     backtest_df.iloc[i, backtest_df.columns.get_loc('signal')] = -current_position
                     backtest_df.iloc[i, backtest_df.columns.get_loc('position')] = 0
@@ -351,22 +303,31 @@ def backtest_strategy(df, predictions, config):
                     consecutive_zeros = 0
                     zero_prediction_start_index = -1
                     consecutive_zero_count = 0
+                    position_enter_time = 0
                     continue
             
-            # 空单止盈条件（保持原有逻辑）
-            elif current_position == -1 and low_price < last_entry_price - 3:
-                # 平仓
-                backtest_df.iloc[i, backtest_df.columns.get_loc('signal')] = -current_position
-                backtest_df.iloc[i, backtest_df.columns.get_loc('position')] = 0
-                # 计算盈亏
-                pnl = (close_price - last_entry_price) * current_position
-                backtest_df.iloc[i, backtest_df.columns.get_loc('pnl')] = pnl
-                last_entry_price = 0
-                current_position = 0
-                consecutive_zeros = 0
-                zero_prediction_start_index = -1
-                consecutive_zero_count = 0
-                continue
+            # 空单动态止盈条件
+            elif current_position == -1:
+                # 获取30分钟ATR值（如果存在）
+                atr_30 = backtest_df.iloc[i].get('atr_30', 0) if i < len(backtest_df) else 0
+                # 动态止盈价 = 开仓价 - max(30分钟ATR, 3个价格)
+                take_profit_amount = max(atr_30, 3)
+                take_profit_price = last_entry_price - take_profit_amount
+                
+                if low_price <= take_profit_price:
+                    # 平仓
+                    backtest_df.iloc[i, backtest_df.columns.get_loc('signal')] = -current_position
+                    backtest_df.iloc[i, backtest_df.columns.get_loc('position')] = 0
+                    # 计算盈亏
+                    pnl = (close_price - last_entry_price) * current_position
+                    backtest_df.iloc[i, backtest_df.columns.get_loc('pnl')] = pnl
+                    last_entry_price = 0
+                    current_position = 0
+                    consecutive_zeros = 0
+                    zero_prediction_start_index = -1
+                    consecutive_zero_count = 0
+                    position_enter_time = 0
+                    continue
             
             # 检查预测是否为0的4根K线自动平仓逻辑
             if pred == 0:
@@ -386,11 +347,28 @@ def backtest_strategy(df, predictions, config):
                     consecutive_zeros = 0
                     zero_prediction_start_index = -1
                     consecutive_zero_count = 0
+                    position_enter_time = 0
                     continue
             else:
                 # 预测不为0，重置计数
                 zero_prediction_start_index = -1
                 consecutive_zero_count = 0
+            
+            # 持有时间达到强制平仓条件
+            if force_close:
+                # 平仓
+                backtest_df.iloc[i, backtest_df.columns.get_loc('signal')] = -current_position
+                backtest_df.iloc[i, backtest_df.columns.get_loc('position')] = 0
+                # 计算盈亏
+                pnl = (close_price - last_entry_price) * current_position
+                backtest_df.iloc[i, backtest_df.columns.get_loc('pnl')] = pnl
+                last_entry_price = 0
+                current_position = 0
+                consecutive_zeros = 0
+                zero_prediction_start_index = -1
+                consecutive_zero_count = 0
+                position_enter_time = 0
+                continue
             
             # 保持当前持仓
             backtest_df.iloc[i, backtest_df.columns.get_loc('position')] = current_position
@@ -405,6 +383,7 @@ def backtest_strategy(df, predictions, config):
                     backtest_df.iloc[i, backtest_df.columns.get_loc('position')] = pred
                     last_entry_price = close_price
                     current_position = pred
+                    position_enter_time = i  # 记录持仓进入时间
             zero_prediction_start_index = -1
     
     # 计算累计盈亏
@@ -490,26 +469,39 @@ def plot_performance(backtest_df, cumulative_returns, drawdown, save_dir):
     plt.savefig(os.path.join(save_dir, 'backtest_performance.png'), dpi=300)
     plt.close()
 
+def apply_confidence_threshold(raw_outputs_array, threshold):
+    """根据置信度阈值过滤预测结果"""
+    # 使用softmax将原始输出转换为概率
+    from scipy.special import softmax
+    probabilities = softmax(raw_outputs_array, axis=1)
+    
+    # 获取每个预测的最大概率和对应的类别
+    max_probs = np.max(probabilities, axis=1)
+    predicted_classes = np.argmax(probabilities, axis=1)
+    
+    # 当置信度低于阈值时，将预测设置为0（无信号）
+    filtered_predictions = np.array([-1, 0, 1])[predicted_classes]
+    filtered_predictions[max_probs < threshold] = 0
+    
+    return filtered_predictions, max_probs, probabilities
+
 def main():
     # 配置参数
     config = {
-        'sequence_length': 20,
-        'hidden_dim': 64,  # 从128改为64以匹配训练时的实际配置
-        'num_layers': 3,
-        'output_dim': 3,  # -1, 0, 1
-        'dropout': 0.2,
-        'device': torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
-        'initial_capital': 1000000
+        'initial_capital': 1000000,
+        'model_type': 'lightgbm',  # 使用LightGBM模型
+        'sequence_length': 20  # 即使使用LightGBM，backtest_strategy函数仍需要此参数
     }
     
-    print(f"使用设备: {config['device']}")
+    print(f"使用LightGBM模型进行回测")
     
     # 数据文件路径
-    data_file = 'C:/python_workspace/future_data/fu2510_1M.csv'
+    data_file = r'C:\LightGBM_Prediction_Singal\backtest_data\fu2510_1M.csv'
     
-    # 模型和缩放器路径 - 使用完整模型文件
-    model_path = 'C:/python_workspace/Processor/models_multi_file_optimized_3layers/3_layers_128hd_0.2do_optimized_full_model_251023_1348.pkl'
-    scaler_path = './models_multi_file_optimized_3layers/multi_file_scaler.pkl'
+    # 使用指定的LightGBM模型文件（使用原始字符串避免转义问题）
+    # 根据日志信息，模型文件是txt格式
+    model_path = r'C:\LightGBM_Prediction_Singal\models_lgbm\lgbm_model_v1.0_251106_1643.txt'
+    metadata_path = r'C:\LightGBM_Prediction_Singal\models_lgbm\lgbm_model_v1.0_251106_1643_metadata.pkl'
     
     # 特征列 - 与训练时保持一致（38个特征）
     feature_columns = [
@@ -534,121 +526,226 @@ def main():
         'close', 'high', 'low', 'open', 'volume'
     ]
     
-    # 加载模型和缩放器
-    model = load_model(model_path, config['device'])
-    scaler = load_scaler(scaler_path)
-    
     # 加载和预处理数据
     df = load_data(data_file)
     df_processed = preprocess_data(df, config)
     
-    # 创建序列
-    X = create_sequences(df_processed, config['sequence_length'], feature_columns)
-    print(f"创建序列: {X.shape}")
+    # 加载LightGBM模型
+    print(f"加载模型: {model_path}")
+    try:
+        # 加载LightGBM模型
+        model = lgb.Booster(model_file=model_path)
+        print("LightGBM模型加载成功")
+        
+        # 加载元数据获取特征列信息
+        try:
+            with open(metadata_path, 'rb') as f:
+                metadata = pickle.load(f)
+            
+            # 如果元数据是字典，尝试获取特征列
+            if isinstance(metadata, dict) and 'feature_columns' in metadata:
+                feature_columns = metadata['feature_columns']
+                print(f"从元数据获取特征列，数量: {len(feature_columns)}")
+            # 如果元数据是numpy数组，假设它包含特征列名称
+            elif isinstance(metadata, np.ndarray):
+                feature_columns = metadata.flatten().tolist()
+                print(f"从元数据数组获取特征列，数量: {len(feature_columns)}")
+            else:
+                raise ValueError("元数据格式不符合预期")
+        except Exception as e:
+            print(f"无法从元数据获取特征列: {e}")
+            # 使用默认特征集
+            feature_columns = [
+                'atr_5', 'return_1', 'bb_upper_20', 'minute', 'price_range_50',
+                'volume_ma_5', 'atr_pct_30', 'atr_pct_10', 'position', 'ma_diff_5',
+                'volatility_50', 'kurtosis_50', 'macd_hist_diff', 'realized_vol_10',
+                'volume_diff_pct_10', 'amount', 'slope_50', 'volatility_20', 'rsi_ma_14',
+                'day_of_month', 'rsi_6', 'skew_50', 'price_range_pct_10', 'rsi_trend_6',
+                'rsi_trend_21', 'skew_10', 'low_pct', 'ma_diff_10', 'rsi_trend_14', 'rsi_14',
+                'macd_line', 'macd_hist', 'momentum_pct_20', 'slope_10', 'high_pct',
+                'ma_diff_pct_20', 'hour', 'macd_hist_ma', 'return_10', 'ma_slope_10',
+                'return_lag_24', 'ma_slope_5', 'return_lag_6', 'return_lag_48',
+                'price_range', 'momentum_5', 'morning_session', 'afternoon_session',
+                'bb_upper_break_20', 'bb_lower_break_20'
+            ]
+            print(f"使用默认特征集，数量: {len(feature_columns)}")
+    except Exception as e:
+        print(f"模型加载出错: {e}")
+        raise
     
-    # 对特征进行缩放
-    X_flat = X.reshape(-1, X.shape[2])
-    X_scaled_flat = scaler.transform(X_flat)
-    X_scaled = X_scaled_flat.reshape(-1, config['sequence_length'], X.shape[2])
+    # 确保数据中包含所有需要的特征
+    available_features = [col for col in feature_columns if col in df_processed.columns]
+    missing_features = [col for col in feature_columns if col not in df_processed.columns]
     
-    # 转换为PyTorch张量
-    X_tensor = torch.tensor(X_scaled, dtype=torch.float32).to(config['device'])
+    if missing_features:
+        print(f"警告: 缺失以下特征: {missing_features[:10]}...")  # 只显示前10个缺失特征
+        print(f"缺失特征总数: {len(missing_features)}")
+        # 使用可用的特征进行预测
+        feature_columns = available_features
+    
+    print(f"实际使用的特征数量: {len(feature_columns)}")
+    
+    # 准备预测数据
+    X_pred = df_processed[feature_columns].values
+    print(f"预测数据形状: {X_pred.shape}")
     
     # 模型预测
-    predictions = []
-    raw_outputs = []
-    batch_size = 1024
-    with torch.no_grad():
-        for i in range(0, len(X_tensor), batch_size):
-            batch = X_tensor[i:i+batch_size]
-            outputs = model(batch)
-            raw_outputs.extend(outputs.cpu().numpy())
-            _, predicted = torch.max(outputs.data, 1)
-            predictions.extend(predicted.cpu().numpy())
+    # LightGBM的predict方法默认返回概率
+    probabilities = model.predict(X_pred)
     
-    # 分析预测分布
-    pred_array = np.array(predictions)
-    print("预测索引分布:")
-    print(np.bincount(pred_array))
+    # 如果返回的是2D数组（多类分类），取最大值索引作为预测类别
+    if len(probabilities.shape) > 1:
+        predicted_classes = np.argmax(probabilities, axis=1)
+        max_probs = np.max(probabilities, axis=1)
+    else:
+        # 二分类情况，需要调整
+        predicted_classes = (probabilities > 0.5).astype(int)
+        max_probs = np.maximum(probabilities, 1 - probabilities)
+        # 扩展为3类格式
+        temp_probs = np.zeros((len(probabilities), 3))
+        for i, cls in enumerate(predicted_classes):
+            temp_probs[i, cls + 1] = 1.0  # 假设二分类结果对应类别1和2
+        probabilities = temp_probs
     
-    # 检查原始输出
-    raw_outputs_array = np.array(raw_outputs)
+    # LightGBM模型预测的类别通常是0,1,2，我们需要映射到-1,0,1
+    # 假设类别0对应下跌(-1)，类别1对应震荡(0)，类别2对应上涨(1)
+    class_mapping = {0: -1, 1: 0, 2: 1}
+    predicted_classes_mapped = [class_mapping.get(cls, 0) for cls in predicted_classes]
+    raw_outputs_array = probabilities
     print(f"原始输出形状: {raw_outputs_array.shape}")
     print(f"部分原始输出示例: {raw_outputs_array[:5]}")
     
-    # 转换预测结果
-    predicted_labels = np.array([-1, 0, 1])[predictions]
-    print(f"预测标签分布:")
-    print(np.unique(predicted_labels, return_counts=True))
-    print(f"预测完成，预测标签形状: {predicted_labels.shape}")
+    # 使用不同置信度阈值进行回测
+    confidence_thresholds = [0.5, 0.7, 0.8, 0.9]  # 包括默认的0.5作为基准
+    all_results = {}
     
-    # 回测策略
-    print("开始回测...")
-    backtest_df = backtest_strategy(df, predicted_labels, config)
-    
-    # 计算性能指标
-    metrics, cumulative_returns, drawdown = calculate_performance_metrics(backtest_df, config['initial_capital'])
-    
-    # 打印性能指标
-    print("\n===== 回测性能指标 =====")
-    print(f"年化收益率: {metrics['年化收益率']*100:.2f}%")
-    print(f"年化波动率: {metrics['年化波动率']*100:.2f}%")
-    print(f"夏普比率: {metrics['夏普比率']:.4f}")
-    print(f"最大回撤: {metrics['最大回撤']*100:.2f}%")
-    print(f"卡尔马比率: {metrics['卡尔马比率']:.4f}")
-    print(f"总收益率: {metrics['总收益率']*100:.2f}%")
-    print(f"总交易次数: {metrics['总交易次数']}")
-    print(f"盈利交易次数: {metrics['盈利交易次数']}")
-    print(f"亏损交易次数: {metrics['亏损交易次数']}")
-    print(f"胜率: {metrics['胜率']*100:.2f}%")
-    
-    # 绘制性能图表
-    plot_performance(backtest_df, cumulative_returns, drawdown, './backtest_results')
-    print("\n回测性能图表已保存至: ./backtest_results/backtest_performance.png")
+    for threshold in confidence_thresholds:
+        print(f"\n===== 使用置信度阈值 {threshold} 进行回测 =====")
+        
+        # 应用置信度阈值过滤预测结果
+        filtered_predictions, max_probs, probabilities = apply_confidence_threshold(raw_outputs_array, threshold)
+        
+        # 截断预测结果以匹配回测数据长度
+        seq_offset = config['sequence_length'] - 1
+        filtered_predictions_truncated = filtered_predictions[seq_offset:]
+        max_probs_truncated = max_probs[seq_offset:]
+        probabilities_truncated = probabilities[seq_offset:]
+        
+        # 分析过滤后的预测分布
+        print(f"过滤后的预测标签分布:")
+        unique, counts = np.unique(filtered_predictions_truncated, return_counts=True)
+        print(dict(zip(unique, counts)))
+        
+        # 计算有效信号比例
+        valid_signals = np.sum(filtered_predictions_truncated != 0)
+        total_predictions = len(filtered_predictions_truncated)
+        signal_ratio = (valid_signals / total_predictions * 100) if total_predictions > 0 else 0
+        print(f"有效信号比例: {signal_ratio:.2f}% ({valid_signals}/{total_predictions})")
+        
+        # 回测策略
+        print("开始回测...")
+        backtest_df = backtest_strategy(df, filtered_predictions_truncated, config)
+        
+        # 添加概率信息到回测结果中，确保包含所有bar数据
+        result_df = df[config['sequence_length']-1:].copy()
+        result_df = pd.concat([result_df.reset_index(drop=True), 
+                              backtest_df[['prediction', 'position', 'signal', 'pnl', 'cum_pnl']].reset_index(drop=True)], 
+                             axis=1)
+        
+        # 添加概率信息 - 使用截断后的数据以匹配回测结果长度
+        result_df['confidence'] = max_probs_truncated
+        result_df['prob_neg1'] = probabilities_truncated[:, 0]
+        result_df['prob_0'] = probabilities_truncated[:, 1]
+        result_df['prob_1'] = probabilities_truncated[:, 2]
+        
+        # 计算性能指标
+        metrics, cumulative_returns, drawdown = calculate_performance_metrics(result_df, config['initial_capital'])
+        
+        # 打印性能指标
+        print(f"\n----- 置信度阈值 {threshold} 的性能指标 -----")
+        print(f"年化收益率: {metrics['年化收益率']*100:.2f}%")
+        print(f"年化波动率: {metrics['年化波动率']*100:.2f}%")
+        print(f"夏普比率: {metrics['夏普比率']:.4f}")
+        print(f"最大回撤: {metrics['最大回撤']*100:.2f}%")
+        print(f"总收益率: {metrics['总收益率']*100:.2f}%")
+        print(f"总交易次数: {metrics['总交易次数']}")
+        print(f"胜率: {metrics['胜率']*100:.2f}%")
+        
+        # 保存结果
+        all_results[threshold] = {
+            'df': result_df,
+            'metrics': metrics,
+            'cumulative_returns': cumulative_returns,
+            'drawdown': drawdown
+        }
     
     # 确保backtest_results目录存在
     if not os.path.exists('./backtest_results'):
         os.makedirs('./backtest_results')
     
-    # 使用时间戳创建唯一文件名，避免权限冲突
+    # 使用时间戳创建唯一文件名
     import datetime
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_file = f'./backtest_results/backtest_results_{timestamp}.csv'
-    pkl_file = f'./backtest_results/performance_metrics_{timestamp}.pkl'
     
-    # 保存回测结果
-    try:
-        backtest_df.to_csv(csv_file, index=False)
-        with open(pkl_file, 'wb') as f:
-            pickle.dump(metrics, f)
-        print(f"回测结果已保存至: {csv_file}")
-        print(f"性能指标已保存至: {pkl_file}")
-    except Exception as e:
-        print(f"保存结果时出错: {e}")
-        # 尝试使用不同的方法保存
+    # 保存每个置信度阈值的结果
+    for threshold in confidence_thresholds:
+        result_df = all_results[threshold]['df']
+        metrics = all_results[threshold]['metrics']
+        
+        # 创建包含置信度的文件名
+        threshold_str = str(threshold).replace('.', '')
+        csv_file = f'./backtest_results/backtest_results_{timestamp}_conf{threshold_str}.csv'
+        pkl_file = f'./backtest_results/performance_metrics_{timestamp}_conf{threshold_str}.pkl'
+        
+        # 保存回测结果（包含所有bar数据和概率信息）
         try:
-            # 删除旧文件（如果存在）
-            if os.path.exists('./backtest_results/backtest_results.csv'):
-                os.remove('./backtest_results/backtest_results.csv')
-            if os.path.exists('./backtest_results/performance_metrics.pkl'):
-                os.remove('./backtest_results/performance_metrics.pkl')
-            # 重新保存
-            backtest_df.to_csv('./backtest_results/backtest_results.csv', index=False)
-            with open('./backtest_results/performance_metrics.pkl', 'wb') as f:
+            result_df.to_csv(csv_file, index=False)
+            with open(pkl_file, 'wb') as f:
                 pickle.dump(metrics, f)
-            print("回测结果已保存至: ./backtest_results/")
-        except Exception as e2:
-            print(f"再次保存失败: {e2}")
+            print(f"\n置信度 {threshold} 的回测结果已保存至: {csv_file}")
+            print(f"性能指标已保存至: {pkl_file}")
+        except Exception as e:
+            print(f"保存置信度 {threshold} 结果时出错: {e}")
     
-    # 以表格形式输出核心指标
-    print("\n===== 核心性能指标表格 =====")
-    print(f"{'指标':<12} {'值':<15} {'说明':<30}")
-    print(f"{'-'*60}")
-    print(f"{'年化收益率':<12} {metrics['年化收益率']*100:.2f}%  {'投资组合年度收益率':<30}")
-    print(f"{'年化波动率':<12} {metrics['年化波动率']*100:.2f}%  {'反映收益率的波动性':<30}")
-    print(f"{'夏普比率':<12} {metrics['夏普比率']:.4f}    {'每单位风险的超额收益':<30}")
-    print(f"{'最大回撤':<12} {metrics['最大回撤']*100:.2f}%  {'最大亏损百分比':<30}")
-    print(f"{'卡尔马比率':<12} {metrics['卡尔马比率']:.4f}    {'年化收益与最大回撤的比值':<30}")
+    # 绘制所有置信度阈值的性能对比图
+    plt.figure(figsize=(15, 10))
+    
+    # 累计收益率对比
+    plt.subplot(2, 1, 1)
+    for threshold in confidence_thresholds:
+        result_df = all_results[threshold]['df']
+        plt.plot(result_df['bob'], result_df['cum_pnl'], label=f'置信度 {threshold}')
+    plt.title('不同置信度阈值的累计盈亏曲线对比')
+    plt.legend()
+    plt.grid(True)
+    
+    # 回撤对比
+    plt.subplot(2, 1, 2)
+    for threshold in confidence_thresholds:
+        result_df = all_results[threshold]['df']
+        cumulative_returns = 1 + result_df['cum_pnl'] / config['initial_capital']
+        running_max = cumulative_returns.cummax()
+        drawdown = (cumulative_returns - running_max) / running_max
+        plt.plot(result_df['bob'], drawdown, label=f'置信度 {threshold}')
+    plt.title('不同置信度阈值的回撤曲线对比')
+    plt.legend()
+    plt.grid(True)
+    
+    plt.tight_layout()
+    comparison_file = f'./backtest_results/confidence_comparison_{timestamp}.png'
+    plt.savefig(comparison_file, dpi=300)
+    plt.close()
+    print(f"\n置信度阈值对比图表已保存至: {comparison_file}")
+    
+    # 以表格形式输出所有置信度阈值的核心指标对比
+    print("\n===== 不同置信度阈值的核心性能指标对比 =====")
+    print(f"{'置信度':<10} {'年化收益率':<15} {'夏普比率':<15} {'最大回撤':<15} {'总交易次数':<15} {'胜率':<10}")
+    print(f"{'-'*85}")
+    
+    for threshold in confidence_thresholds:
+        metrics = all_results[threshold]['metrics']
+        print(f"{threshold:<10} {metrics['年化收益率']*100:.2f}%{'':<10} {metrics['夏普比率']:.4f}{'':<10} {metrics['最大回撤']*100:.2f}%{'':<10} {metrics['总交易次数']:<15} {metrics['胜率']*100:.2f}%")
+
 
 if __name__ == "__main__":
     main()
