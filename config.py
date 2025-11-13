@@ -52,14 +52,18 @@ class DataConfig(BaseConfig):
     MAX_MISSING_RATIO = 0.05  # 最大缺失比例
     MAX_GAP_MINUTES = 30  # 最大时间间隔（分钟）
     
-    # 目标变量参数
-    LOOKAHEAD_MINUTES = 3  # 预测未来N个分钟/周期，可配置参数，默认值为3
-    TARGET_THRESHOLD_TYPE = 'static'  # 'static' 或 'dynamic'
-    STATIC_THRESHOLD_UP = 0.0005  # 静态上涨阈值
-    STATIC_THRESHOLD_DOWN = -0.0005  # 静态下跌阈值
-    DYNAMIC_WINDOW = 200  # 动态阈值的滚动窗口
-    DYNAMIC_QUANTILE_UP = 0.75  # 上涨阈值分位数
-    DYNAMIC_QUANTILE_DOWN = 0.25  # 下跌阈值分位数
+    # 目标变量参数 - 优化以提高F1分数
+    LOOKAHEAD_MINUTES = 1  # 减小预测窗口以增加交易信号数量
+    TARGET_THRESHOLD_TYPE = 'dynamic'  # 切换到动态阈值以更好地适应市场变化
+    STATIC_THRESHOLD_UP = 0.0002  # 进一步降低上涨阈值，增加上涨信号
+    STATIC_THRESHOLD_DOWN = -0.0002  # 进一步降低下跌阈值，增加下跌信号
+    DYNAMIC_WINDOW = 250  # 增加动态阈值窗口以捕获更长期的模式
+    DYNAMIC_QUANTILE_UP = 0.72  # 略微降低上涨阈值分位数，增加上涨信号
+    DYNAMIC_QUANTILE_DOWN = 0.28  # 略微提高下跌阈值分位数，增加下跌信号
+    
+    # 高级目标变量参数
+    FOCUS_ON_MINORITY_CLASSES = True  # 重点关注少数类别
+    ENABLE_CLASS_WEIGHTING = True  # 启用类别加权
     
     # 数据分割参数
     TRAIN_RATIO = 0.7  # 训练集比例
@@ -74,41 +78,41 @@ class DataConfig(BaseConfig):
 # 特征工程配置
 # ==========================
 class FeatureConfig(BaseConfig):
-    # 技术指标参数
-    # 移动平均线
-    MA_WINDOWS = [5, 10, 20, 50]  # 均线窗口
+    # 技术指标参数 - 扩展窗口以捕获更多模式
+    MA_WINDOWS = [2, 3, 5, 8, 10, 15, 20, 30, 50, 100, 150, 200]  # 进一步增加多种周期
     
-    # RSI参数
-    RSI_WINDOWS = [6, 14, 21]  # RSI窗口
+    # RSI参数 - 增加更多周期以提高响应速度和稳定性
+    RSI_WINDOWS = [2, 3, 5, 6, 9, 12, 14, 21, 30, 50]  # 增加更多RSI周期
     
-    # MACD参数
+    # MACD参数 - 保持经典参数
     MACD_FAST = 12  # 快线周期
     MACD_SLOW = 26  # 慢线周期
     MACD_SIGNAL = 9  # 信号线周期
     
-    # 布林带参数
-    BB_WINDOWS = [20]  # 布林带窗口
-    BB_STD = 2  # 标准差倍数
+    # 布林带参数 - 增加更多窗口和标准差选项
+    BB_WINDOWS = [10, 20, 30, 50]  # 增加50周期
+    BB_STD = [1.5, 2.0, 2.5]  # 增加多个标准差选项
     
-    # 波动率参数
-    VOLATILITY_WINDOWS = [5, 10, 20, 30]  # 波动率窗口，增加30分钟ATR
+    # 波动率参数 - 进一步扩展范围
+    VOLATILITY_WINDOWS = [3, 5, 10, 20, 30, 60, 120]  # 增加120周期
     
-    # 动量参数
-    MOMENTUM_WINDOWS = [5, 10, 20]  # 动量窗口
+    # 动量参数 - 增加更多时间窗口
+    MOMENTUM_WINDOWS = [3, 5, 10, 20, 50]  # 增加50周期
     
-    # 量价关系参数
-    VOLUME_PRICE_WINDOWS = [5, 10]  # 量价关系窗口
+    # 量价关系参数 - 增加更多窗口
+    VOLUME_PRICE_WINDOWS = [5, 10, 20, 50]  # 增加50周期
     
-    # 统计特征参数
-    STAT_WINDOWS = [10, 20, 50]  # 统计特征窗口
+    # 统计特征参数 - 增加更多窗口
+    STAT_WINDOWS = [5, 10, 20, 50, 100]  # 增加100周期
     
-    # 滞后特征参数
-    LAG_FEATURES = [3, 6, 12, 24, 48]  # 滞后步长
+    # 滞后特征参数 - 调整滞后步长以捕获更多时间模式
+    LAG_FEATURES = [1, 3, 6, 12, 24, 48]  # 增加48周期以捕获日度模式
     
-    # 特征选择参数
-    FEATURE_IMPORTANCE_THRESHOLD = 0.001  # 特征重要性阈值
-    MAX_FEATURES = 50  # 最大特征数量
-    CORRELATION_THRESHOLD = 0.95  # 相关系数阈值
+    # 特征选择参数 - 进一步放宽以允许更多潜在有用特征
+    FEATURE_IMPORTANCE_THRESHOLD = 0.0003  # 进一步降低特征重要性阈值
+    MAX_FEATURES = 120  # 进一步增加最大特征数量
+    CORRELATION_THRESHOLD = 0.92  # 略微调整相关系数阈值
+    ENABLE_RECURSIVE_FEATURE_ELIMINATION = True  # 启用递归特征消除
 
 # ==========================
 # 模型配置
@@ -118,39 +122,61 @@ class ModelConfig(BaseConfig):
     BOOSTER_TYPE = 'gbdt'  # 提升器类型
     OBJECTIVE = 'multiclass'  # 目标函数
     NUM_CLASS = 3  # 类别数量
-    METRIC = 'multi_logloss'  # 评估指标
+    METRIC = 'multi_logloss'  # 评估指标 (内部计算)
+    EVAL_METRIC = ['multi_logloss', 'multi_error', 'auc_mu']  # 增加多指标评估
     VERBOSE = 100  # 日志输出频率
     
-    # 训练参数
-    NUM_BOOST_ROUND = 5000  # 减少最大迭代次数
-    VALIDATION_FRACTION = 0.25  # 增加验证集比例
+    # 训练参数 - 增加最大迭代次数
+    NUM_BOOST_ROUND = 8000  # 增加最大迭代次数以捕获更复杂的模式
+    VALIDATION_FRACTION = 0.25  # 验证集比例
     
-    # 类别平衡参数
-    IS_UNBALANCE = False  # 禁用自动不平衡处理，使用自定义权重
+    # 类别平衡参数 - 增强以提高F1分数
+    IS_UNBALANCE = True  # 启用自动不平衡处理
     ENABLE_RANDOM_SEED = True  # 启用随机种子保证可复现性
     RANDOM_SEED = 42  # 随机种子值
+    CLASS_WEIGHTS = 'balanced'  # 使用balanced权重策略
     
-    # Optuna超参数搜索范围 - 增加正则化和控制过拟合
+    # SMOTE过采样配置
+    SMOTE_ENABLED = True  # 启用SMOTE过采样
+    SMOTE_SAMPLING_STRATEGY = 'auto'  # 采样策略
+    SMOTE_K_NEIGHBORS = 5  # SMOTE的K近邻数
+    
+    # Optuna超参数搜索范围 - 优化以提高F1分数
     OPTUNA_SEARCH_SPACE = {
-        'num_leaves': {'low': 8, 'high': 64, 'step': 4},  # 减少最大叶节点数
-        'learning_rate': {'low': 0.005, 'high': 0.05, 'log': True},  # 降低学习率上限
-        'feature_fraction': {'low': 0.5, 'high': 0.9},  # 强制特征子集采样
-        'bagging_fraction': {'low': 0.6, 'high': 0.9},  # 强制数据子集采样
-        'bagging_freq': {'low': 5, 'high': 15},  # 增加采样频率
-        'lambda_l1': {'low': 0.1, 'high': 20.0, 'log': True},  # 增加L1正则化下限
-        'lambda_l2': {'low': 0.1, 'high': 20.0, 'log': True},  # 增加L2正则化下限
-        'min_data_in_leaf': {'low': 30, 'high': 150, 'step': 10},  # 增加叶节点最小数据量
-        'min_gain_to_split': {'low': 0.001, 'high': 0.1},  # 增加最小分裂增益
+        'num_leaves': {'low': 32, 'high': 384, 'step': 16},  # 进一步增加上限以提高模型复杂度
+        'learning_rate': {'low': 0.001, 'high': 0.08, 'log': True},  # 扩大学习率范围上限
+        'feature_fraction': {'low': 0.3, 'high': 1.0},  # 特征采样范围
+        'bagging_fraction': {'low': 0.5, 'high': 1.0},  # 数据采样范围
+        'bagging_freq': {'low': 1, 'high': 30},  # 采样频率范围
+        'lambda_l1': {'low': 0.0001, 'high': 15.0, 'log': True},  # 进一步扩大L1正则化范围
+        'lambda_l2': {'low': 0.0001, 'high': 15.0, 'log': True},  # 进一步扩大L2正则化范围
+        'min_data_in_leaf': {'low': 8, 'high': 250, 'step': 10},  # 进一步扩大叶节点最小数据量范围
+        'min_gain_to_split': {'low': 0.000001, 'high': 0.2},  # 进一步扩大最小分裂增益阈值范围
+        'max_depth': {'low': 8, 'high': 35},  # 扩大树深度搜索范围
+        'scale_pos_weight': {'low': 0.3, 'high': 3.0},  # 扩大正负样本权重比例参数范围
+        'extra_trees': {'low': 0, 'high': 1, 'step': 1},  # 添加额外树参数
+        'max_bin': {'low': 128, 'high': 512, 'step': 64},  # 添加最大分箱参数
     }
     
     # 过拟合控制参数
-    MAX_DEPTH = 15  # 最大树深度
-    EARLY_STOPPING_ROUNDS = 50  # 减少早停轮数，更早停止
-    VERBOSE = 200  # 减少日志输出频率
+    MAX_DEPTH = 25  # 增加树深度以提高模型容量
+    EARLY_STOPPING_ROUNDS = 200  # 增加早停轮数以允许更充分的训练
+    FEATURE_PRE_FILTER = False  # 禁用特征预过滤，允许动态调整min_data_in_leaf
     
-    # Optuna优化参数
-    OPTUNA_N_TRIALS = 100  # 试验次数
+    # Optuna优化参数 - 增强以提高F1分数
+    OPTUNA_N_TRIALS = 400  # 进一步增加试验次数
     OPTUNA_SEED = 42  # 随机种子
+    OPTUNA_SAMPLER = 'TPESampler'  # 使用Tree-structured Parzen Estimator
+    OPTUNA_SAMPLER_MULTIVARIATE = True  # 启用多变量采样
+    OPTUNA_N_STARTUP_TRIALS = 40  # 增加初始随机采样次数
+    OPTUNA_PRUNER = 'HyperbandPruner'  # 使用Hyperband剪枝加速优化
+    OPTUNA_SCORE_FUNC = 'f1_weighted'  # 使用加权F1分数作为优化目标
+    OPTUNA_DIRECTION = 'maximize'  # 最大化目标函数
+    
+    # 模型集成参数
+    BAGGING_FRACTION = 0.8  # 数据采样比例
+    BAGGING_FREQUENCY = 1  # 数据采样频率
+    FEATURE_FRACTION = 0.8  # 特征采样比例
     
     # 模型保存参数
     MODEL_VERSION = 'v1.0'
@@ -168,7 +194,7 @@ class BacktestConfig(BaseConfig):
     SLIPPAGE_RATE = 0.00005  # 滑点率
     
     # 信号过滤参数
-    MIN_CONFIDENCE = 0.55  # 最小置信度
+    MIN_CONFIDENCE = 0.45  # 降低最小置信度以接受更多交易信号
     SIGNALS_CONSENSUS = 2  # 信号一致性要求
     
     # 止损止盈参数

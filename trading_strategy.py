@@ -15,7 +15,7 @@ class SingleLongOnlyStrategy:
     4. 固定1手开仓
     """
     
-    def __init__(self, holding_period: int = 3, cooldown_period: int = 50):
+    def __init__(self, holding_period: int = 1, cooldown_period: int = 20):
         """
         初始化单方向多单策略
         
@@ -75,7 +75,7 @@ class SingleLongOnlyStrategy:
             if force_close:
                 # 强制平仓，无论后续是否有信号都平仓
                 trade_action = 2
-                explanation = "强制平仓（已持有3个bar）"
+                explanation = f"强制平仓（已持有{self.holding_period}个bar）"
                 if price_info is not None:
                     self._record_trade('long', self.position_enter_time, current_index, 
                                       self.position_enter_price, price_info['close'])

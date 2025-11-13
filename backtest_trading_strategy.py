@@ -170,20 +170,10 @@ def preprocess_data(df, config):
 # LightGBM不需要创建序列数据和加载PyTorch模型及缩放器
 
 def is_restricted_time(dt):
-    """检查是否为限制开仓时间"""
-    t = dt.time()
-    # 9:00-9:15
-    if time(9, 0) <= t <= time(9, 15):
-        return True
-    # 14:45-15:00
-    if time(14, 45) <= t <= time(15, 0):
-        return True
-    # 21:00-21:15
-    if time(21, 0) <= t <= time(21, 15):
-        return True
-    # 22:45-23:00
-    if time(22, 45) <= t <= time(23, 0):
-        return True
+    """
+    检查是否为限制开仓时间 - 暂时禁用时间限制以验证模型效果
+    """
+    # 暂时禁用时间限制
     return False
 
 def is_close_time(dt):
@@ -215,8 +205,11 @@ def backtest_strategy(df, predictions, config):
     consecutive_zero_count = 0  # 记录预测为0的连续K线数量
     position_enter_time = 0  # 记录持仓进入的索引位置
     
-    # 策略参数
-    LOOKAHEAD = 3  # 持有时间（bar数量）
+    # 策略参数 - 进一步放宽以增加交易机会
+    LOOKAHEAD = 2  # 保持相同的持有期
+    COOLDOWN_PERIOD = 3  # 进一步减少冷却期
+    CONSECUTIVE_SIGNAL_THRESHOLD = 1  # 保持放宽的连续信号要求
+    last_signals = []  # 存储最近的信号
     
     # 执行回测
     for i in range(len(backtest_df)):
@@ -375,15 +368,51 @@ def backtest_strategy(df, predictions, config):
         
         # 如果为空仓，检查是否可以开仓
         else:
+            # 记录最近的信号
+            last_signals.append(pred)
+            if len(last_signals) > CONSECUTIVE_SIGNAL_THRESHOLD:
+                last_signals.pop(0)
+                
             # 检查是否为限制开仓时间
-            if not is_restricted_time(dt):
-                if pred == 1 or pred == -1:
+            restricted = is_restricted_time(dt)
+            
+            # 添加信号质量过滤
+            if not restricted and pred != 0:
+                # 简化的信号确认逻辑
+                signal_confirmed = True
+                
+                # 条件1: 价格动量确认（使用更宽松的条件）
+                if i >= 1:
+                    if pred == 1:  # 多头信号
+                        # 只需要最近一个bar价格上涨
+                        if backtest_df.iloc[i]['close'] <= backtest_df.iloc[i-1]['close']:
+                            # 可以有条件地接受逆势头寸，但降低开仓概率
+                            if backtest_df.iloc[i]['close'] < backtest_df.iloc[i-1]['close'] * 0.998:  # 下跌超过0.2%则不考虑
+                                signal_confirmed = False
+                    elif pred == -1:  # 空头信号
+                        # 只需要最近一个bar价格下跌
+                        if backtest_df.iloc[i]['close'] >= backtest_df.iloc[i-1]['close']:
+                            # 可以有条件地接受逆势头寸，但降低开仓概率
+                            if backtest_df.iloc[i]['close'] > backtest_df.iloc[i-1]['close'] * 1.002:  # 上涨超过0.2%则不考虑
+                                signal_confirmed = False
+                
+                # 条件2: 简单的波动性过滤
+                if i >= 1 and signal_confirmed:
+                    price_change = abs(backtest_df.iloc[i]['close'] - backtest_df.iloc[i-1]['close'])
+                    avg_price = (backtest_df.iloc[i]['high'] + backtest_df.iloc[i]['low']) / 2
+                    # 只过滤极端波动
+                    if price_change / avg_price > 0.02:  # 提高阈值到2%
+                        signal_confirmed = False
+                
+                # 开仓条件：简化的过滤条件
+                if signal_confirmed:
                     # 开仓
                     backtest_df.iloc[i, backtest_df.columns.get_loc('signal')] = pred
                     backtest_df.iloc[i, backtest_df.columns.get_loc('position')] = pred
                     last_entry_price = close_price
                     current_position = pred
                     position_enter_time = i  # 记录持仓进入时间
+                    print(f"时间点 {dt} -> 成功开仓: 信号 {pred}，价格 {close_price}")
             zero_prediction_start_index = -1
     
     # 计算累计盈亏
@@ -593,6 +622,14 @@ def main():
     # LightGBM的predict方法默认返回概率
     probabilities = model.predict(X_pred)
     
+    # 添加调试信息：打印原始概率分布
+    print(f"原始概率形状: {probabilities.shape}")
+    print(f"部分原始概率示例:")
+    if len(probabilities.shape) > 1:
+        print(f"前5个样本的原始概率: {probabilities[:5]}")
+    else:
+        print(f"前5个样本的原始概率: {probabilities[:5]}")
+    
     # 如果返回的是2D数组（多类分类），取最大值索引作为预测类别
     if len(probabilities.shape) > 1:
         predicted_classes = np.argmax(probabilities, axis=1)
@@ -607,6 +644,11 @@ def main():
             temp_probs[i, cls + 1] = 1.0  # 假设二分类结果对应类别1和2
         probabilities = temp_probs
     
+    # 添加调试信息：打印预测类别分布
+    unique_classes, class_counts = np.unique(predicted_classes, return_counts=True)
+    print(f"原始预测类别分布: {dict(zip(unique_classes, class_counts))}")
+    print(f"最大概率统计: 均值={np.mean(max_probs):.4f}, 中位数={np.median(max_probs):.4f}, 最小值={np.min(max_probs):.4f}, 最大值={np.max(max_probs):.4f}")
+    
     # LightGBM模型预测的类别通常是0,1,2，我们需要映射到-1,0,1
     # 假设类别0对应下跌(-1)，类别1对应震荡(0)，类别2对应上涨(1)
     class_mapping = {0: -1, 1: 0, 2: 1}
@@ -615,8 +657,8 @@ def main():
     print(f"原始输出形状: {raw_outputs_array.shape}")
     print(f"部分原始输出示例: {raw_outputs_array[:5]}")
     
-    # 使用不同置信度阈值进行回测
-    confidence_thresholds = [0.5, 0.7, 0.8, 0.9]  # 包括默认的0.5作为基准
+    # 使用不同置信度阈值进行回测，添加更低的阈值以捕获更多交易信号
+    confidence_thresholds = [0.2, 0.25, 0.3, 0.35, 0.4]  # 添加更低的阈值来捕获更多交易信号
     all_results = {}
     
     for threshold in confidence_thresholds:
@@ -640,7 +682,7 @@ def main():
         valid_signals = np.sum(filtered_predictions_truncated != 0)
         total_predictions = len(filtered_predictions_truncated)
         signal_ratio = (valid_signals / total_predictions * 100) if total_predictions > 0 else 0
-        print(f"有效信号比例: {signal_ratio:.2f}% ({valid_signals}/{total_predictions})")
+        print(f"有效信号比例: {signal_ratio:.2f}% ({valid_signals}/{total_predictions})\n")
         
         # 回测策略
         print("开始回测...")

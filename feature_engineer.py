@@ -87,10 +87,13 @@ class FeatureEngineer:
         """
         df_features = df.copy()
         
+        # 确保数据类型为float64（double）以兼容talib
+        close_values = df_features['close'].values.astype(np.float64)
+        
         for window in Config.MA_WINDOWS:
-            # 直接使用talib计算简单移动平均线和指数移动平均线
-            df_features[f'ma_{window}'] = talib.SMA(df_features['close'].values, timeperiod=window)
-            df_features[f'ema_{window}'] = talib.EMA(df_features['close'].values, timeperiod=window)
+            # 使用转换后的数据计算简单移动平均线和指数移动平均线
+            df_features[f'ma_{window}'] = talib.SMA(close_values, timeperiod=window)
+            df_features[f'ema_{window}'] = talib.EMA(close_values, timeperiod=window)
             
             # 计算价格与均线的偏差
             df_features[f'ma_diff_{window}'] = df_features['close'] - df_features[f'ma_{window}']
@@ -118,9 +121,12 @@ class FeatureEngineer:
         """
         df_features = df.copy()
         
+        # 确保数据类型为float64（double）以兼容talib
+        close_values = df_features['close'].values.astype(np.float64)
+        
         for window in Config.RSI_WINDOWS:
-            # 直接使用talib计算RSI
-            df_features[f'rsi_{window}'] = talib.RSI(df_features['close'].values, timeperiod=window)
+            # 使用转换后的数据计算RSI
+            df_features[f'rsi_{window}'] = talib.RSI(close_values, timeperiod=window)
             
             # 计算RSI的移动平均线和趋势
             df_features[f'rsi_ma_{window}'] = df_features[f'rsi_{window}'].rolling(window=window).mean()
@@ -145,10 +151,13 @@ class FeatureEngineer:
         """
         df_features = df.copy()
         
-        # 直接使用talib计算MACD
+        # 确保数据类型为float64（double）以兼容talib
+        close_values = df_features['close'].values.astype(np.float64)
+        
+        # 使用转换后的数据计算MACD
         # talib.MACD返回 (macd_line, signal_line, histogram)
         macd_line, macd_signal, macd_hist = talib.MACD(
-            df_features['close'].values,
+            close_values,
             fastperiod=Config.MACD_FAST,
             slowperiod=Config.MACD_SLOW,
             signalperiod=Config.MACD_SIGNAL
@@ -185,14 +194,20 @@ class FeatureEngineer:
         """
         df_features = df.copy()
         
+        # 确保数据类型为float64（double）以兼容talib
+        close_values = df_features['close'].values.astype(np.float64)
+        
         for window in Config.BB_WINDOWS:
-            # 直接使用talib计算布林带
+            # 如果BB_STD是列表，使用第一个值；否则直接使用
+            bb_std = Config.BB_STD[0] if isinstance(Config.BB_STD, list) else Config.BB_STD
+            
+            # 使用转换后的数据计算布林带
             # talib.BBANDS返回 (upperband, middleband, lowerband)
             upper_band, middle_band, lower_band = talib.BBANDS(
-                df_features['close'].values,
+                close_values,
                 timeperiod=window,
-                nbdevup=Config.BB_STD,
-                nbdevdn=Config.BB_STD,
+                nbdevup=bb_std,
+                nbdevdn=bb_std,
                 matype=0  # 简单移动平均
             )
             df_features[f'bb_upper_{window}'] = upper_band
@@ -202,8 +217,9 @@ class FeatureEngineer:
             # 带宽指标
             df_features[f'bb_bandwidth_{window}'] = (upper_band - lower_band) / middle_band
             
-            # 价格相对于布林带的位置
-            df_features[f'bb_position_{window}'] = (df_features['close'] - lower_band) / (upper_band - lower_band)
+            # 价格相对于布林带的位置，添加epsilon避免除以零
+            epsilon = 1e-10
+            df_features[f'bb_position_{window}'] = (df_features['close'] - lower_band) / (upper_band - lower_band + epsilon)
             
             # 布林带突破
             df_features[f'bb_upper_break_{window}'] = 0
@@ -232,12 +248,17 @@ class FeatureEngineer:
         """
         df_features = df.copy()
         
+        # 确保数据类型为float64（double）以兼容talib
+        high_values = df_features['high'].values.astype(np.float64)
+        low_values = df_features['low'].values.astype(np.float64)
+        close_values = df_features['close'].values.astype(np.float64)
+        
         for window in Config.VOLATILITY_WINDOWS:
-            # 直接使用talib计算ATR
+            # 使用转换后的数据计算ATR
             df_features[f'atr_{window}'] = talib.ATR(
-                df_features['high'].values,
-                df_features['low'].values,
-                df_features['close'].values,
+                high_values,
+                low_values,
+                close_values,
                 timeperiod=window
             )
             
@@ -262,12 +283,15 @@ class FeatureEngineer:
         """
         df_features = df.copy()
         
+        # 确保数据类型为float64（double）以兼容talib
+        close_values = df_features['close'].values.astype(np.float64)
+        
         for window in Config.MOMENTUM_WINDOWS:
-            # 直接使用talib计算动量指标和变化率
+            # 使用转换后的数据计算动量指标和变化率
             # 动量指标
-            df_features[f'momentum_{window}'] = talib.MOM(df_features['close'].values, timeperiod=window)
+            df_features[f'momentum_{window}'] = talib.MOM(close_values, timeperiod=window)
             # 变化率
-            df_features[f'roc_{window}'] = talib.ROC(df_features['close'].values, timeperiod=window)
+            df_features[f'roc_{window}'] = talib.ROC(close_values, timeperiod=window)
             
             # 计算动量百分比
             df_features[f'momentum_pct_{window}'] = df_features[f'momentum_{window}'] / df_features['close'].shift(window)
@@ -275,11 +299,16 @@ class FeatureEngineer:
             # 计算相对强弱
             df_features[f'rs_{window}'] = df_features['close'] / df_features['close'].shift(window)
         
-        # 直接使用talib计算威廉指标 (W%R)
+        # 确保数据类型为float64（double）以兼容talib
+        high_values = df_features['high'].values.astype(np.float64)
+        low_values = df_features['low'].values.astype(np.float64)
+        close_values = df_features['close'].values.astype(np.float64)
+        
+        # 使用转换后的数据计算威廉指标 (W%R)
         df_features['williams_r'] = talib.WILLR(
-            df_features['high'].values,
-            df_features['low'].values,
-            df_features['close'].values,
+            high_values,
+            low_values,
+            close_values,
             timeperiod=14
         )
         
@@ -304,10 +333,13 @@ class FeatureEngineer:
         """
         df_features = df.copy()
         
-        # 直接使用talib计算成交量移动平均
+        # 确保数据类型为float64（double）以兼容talib
+        volume_values = df_features['volume'].values.astype(np.float64)
+        
+        # 使用转换后的数据计算成交量移动平均
         for window in Config.VOLUME_PRICE_WINDOWS:
-            df_features[f'volume_ma_{window}'] = talib.SMA(df_features['volume'].values, timeperiod=window)
-            df_features[f'volume_ema_{window}'] = talib.EMA(df_features['volume'].values, timeperiod=window)
+            df_features[f'volume_ma_{window}'] = talib.SMA(volume_values, timeperiod=window)
+            df_features[f'volume_ema_{window}'] = talib.EMA(volume_values, timeperiod=window)
             
             # 计算成交量与均线的偏差
             df_features[f'volume_diff_pct_{window}'] = (df_features['volume'] - df_features[f'volume_ma_{window}']) / df_features[f'volume_ma_{window}']
@@ -334,27 +366,32 @@ class FeatureEngineer:
         """
         df_features = df.copy()
         
+        # 确保数据类型为float64（double）以兼容talib
+        close_values = df_features['close'].values.astype(np.float64)
+        high_values = df_features['high'].values.astype(np.float64)
+        low_values = df_features['low'].values.astype(np.float64)
+        
         for window in Config.STAT_WINDOWS:
-            # 直接使用talib计算波动率
-            df_features[f'volatility_{window}'] = talib.STDDEV(df_features['close'].values, timeperiod=window)
+            # 使用转换后的数据计算波动率
+            df_features[f'volatility_{window}'] = talib.STDDEV(close_values, timeperiod=window)
             
             # 计算偏度和峰度
             df_features[f'skew_{window}'] = df_features['close'].rolling(window=window).skew()
             df_features[f'kurtosis_{window}'] = df_features['close'].rolling(window=window).kurt()
             
-            # 直接使用talib计算最高价和最低价
-            df_features[f'high_{window}'] = talib.MAX(df_features['high'].values, timeperiod=window)
-            df_features[f'low_{window}'] = talib.MIN(df_features['low'].values, timeperiod=window)
+            # 使用转换后的数据计算最高价和最低价
+            df_features[f'high_{window}'] = talib.MAX(high_values, timeperiod=window)
+            df_features[f'low_{window}'] = talib.MIN(low_values, timeperiod=window)
             
             # 计算价格范围
             df_features[f'price_range_{window}'] = df_features[f'high_{window}'] - df_features[f'low_{window}']
             df_features[f'price_range_pct_{window}'] = df_features[f'price_range_{window}'] / df_features['close']
             
-            # 线性回归斜率 - 修复长度不匹配问题
+            # 线性回归斜率 - 修复长度不匹配问题和数据类型问题
             for i in range(window):
                 df_features[f'lag_{i}'] = df_features['close'].shift(i)
             df_features[f'slope_{window}'] = df_features[[f'lag_{i}' for i in range(window)]].apply(
-                lambda x: np.polyfit(range(len(x.dropna())), x.dropna(), 1)[0] if len(x.dropna()) >= 2 else np.nan, axis=1
+                lambda x: np.polyfit(range(len(x.dropna())), x.dropna().astype(np.float64), 1)[0] if len(x.dropna()) >= 2 else np.nan, axis=1
             )
             # 删除滞后列
             for i in range(window):
@@ -529,10 +566,28 @@ class FeatureEngineer:
         if 'target' in df_copy.columns:
             target = df_copy['target'].copy()
             has_target = True
-            # 从特征计算中移除目标变量，但在最后保留
+            # 从特征计算中移除目标变量
             df_features = df_copy.drop('target', axis=1)
         else:
             df_features = df_copy.copy()
+        
+        # 移除非数值型列，但确保保留必要的价格和成交量列
+        # 首先将必要的价格和成交量列转换为数值型（如果它们是字符串）
+        essential_columns = ['open', 'high', 'low', 'close', 'volume', 'amount', 'position']
+        for col in essential_columns:
+            if col in df_features.columns and not pd.api.types.is_numeric_dtype(df_features[col]):
+                try:
+                    df_features[col] = pd.to_numeric(df_features[col], errors='coerce')
+                    self.logger.info(f"已将列 {col} 转换为数值型")
+                except Exception as e:
+                    self.logger.warning(f"无法将列 {col} 转换为数值型: {str(e)}")
+        
+        # 然后过滤掉剩余的非数值型列（如symbol等）
+        numeric_columns = df_features.select_dtypes(include=[np.number]).columns
+        non_numeric_columns = df_features.columns.difference(numeric_columns)
+        if len(non_numeric_columns) > 0:
+            self.logger.info(f"移除非数值型列: {list(non_numeric_columns)}")
+            df_features = df_features[numeric_columns]
         
         # 1. 基础价格特征
         df_features = self.calculate_basic_price_features(df_features)

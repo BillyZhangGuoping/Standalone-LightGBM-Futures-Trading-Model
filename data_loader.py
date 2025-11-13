@@ -16,6 +16,11 @@ from typing import List, Dict, Tuple, Optional, Union
 import warnings
 warnings.filterwarnings('ignore')
 
+# 添加SMOTE和其他必要的导入
+from imblearn.over_sampling import SMOTE
+from imblearn.combine import SMOTETomek
+from sklearn.preprocessing import StandardScaler
+
 from config import Config
 
 # 设置日志
@@ -335,20 +340,44 @@ class FutureDataLoader:
         self.logger.info(f"数据清洗完成，清洗后形状: {df_clean.shape}")
         return df_clean
     
+    def _is_restricted_trading_time(self, timestamp):
+        """
+        判断是否为不适合开仓的时间段
+        
+        Args:
+            timestamp: 时间戳
+            
+        Returns:
+            bool: 是否为限制交易时间
+        """
+        # 提取小时和分钟
+        hour = timestamp.hour
+        minute = timestamp.minute
+        
+        # 开盘后15分钟和收盘前15分钟通常波动较大
+        if (hour == 9 and 0 <= minute < 15) or (hour == 14 and 45 <= minute <= 59):
+            return True
+        
+        # 午休前后15分钟
+        if (hour == 11 and 20 <= minute <= 30) or (hour == 13 and 0 <= minute < 15):
+            return True
+        
+        return False
+    
     def generate_target(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        生成目标变量
+        生成目标变量，考虑时间因素对交易质量的影响，并优化权重计算以提高F1分数
         
         Args:
             df: 清洗后的数据
             
         Returns:
-            pd.DataFrame: 添加了目标变量的数据
+            pd.DataFrame: 添加了目标变量和优化权重的数据
         """
         # 计算未来收益率
         df_target = df.copy()
         if 'close' in df_target.columns:
-            # 计算未来3分钟的收益率
+            # 计算未来收益率
             df_target['future_close'] = df_target['close'].shift(-Config.LOOKAHEAD_MINUTES)
             df_target['future_return'] = (df_target['future_close'] - df_target['close']) / df_target['close']
             
@@ -386,16 +415,71 @@ class FutureDataLoader:
             target_dist = df_target['target'].value_counts().sort_index()
             self.logger.info(f"目标变量分布: {target_dist.to_dict()}")
             
-            # 计算类别权重
+            # 计算类别权重 - 增强版本
             total_samples = len(df_target)
             class_weights = {}
+            # 计算类别频率
             for target_class in [-1, 0, 1]:
                 count = target_dist.get(target_class, 0)
-                class_weights[target_class] = total_samples / (3 * count) if count > 0 else 1.0
-            self.logger.info(f"计算的类别权重: {class_weights}")
+                if count > 0:
+                    # 使用改进的权重计算方法
+                    class_freq = count / total_samples
+                    # 基于频率的权重，确保少数类获得更高权重
+                    class_weights[target_class] = max(1.0, (total_samples / (3 * count)) * 1.2)  # 增加1.2倍的权重因子
+                else:
+                    class_weights[target_class] = 1.0
+            self.logger.info(f"计算的增强类别权重: {class_weights}")
             
-            # 存储类别权重
+            # 初始设置类别权重
             df_target['class_weight'] = df_target['target'].map(class_weights)
+            
+            # 策略1: 时间加权 - 给予近期数据更高权重
+            # 创建线性递增的时间权重（近期数据权重更高）
+            time_positions = np.arange(len(df_target))
+            time_weights_linear = 0.7 + (0.6 * (time_positions / len(df_target)))  # 范围0.7-1.3
+            df_target['time_weight'] = time_weights_linear
+            
+            # 策略2: 时间段加权 - 为不适合开仓的时间段降低权重
+            restricted_weights = []
+            for idx in df_target.index:
+                if isinstance(idx, pd.Timestamp):
+                    if self._is_restricted_trading_time(idx):
+                        # 限制交易时间段降低权重，但调整为40%
+                        restricted_weights.append(0.4)
+                    else:
+                        restricted_weights.append(1.0)
+                else:
+                    restricted_weights.append(1.0)
+            df_target['restricted_weight'] = restricted_weights
+            
+            # 策略3: 波动率加权 - 给予低波动时期更高权重
+            # 计算滚动波动率
+            df_target['volatility'] = df_target['close'].rolling(window=20, min_periods=5).std() / \
+                                      df_target['close'].rolling(window=20, min_periods=5).mean()
+            df_target['volatility'] = df_target['volatility'].fillna(df_target['volatility'].mean())
+            # 波动率越低，权重越高
+            df_target['volatility_weight'] = 2.0 - df_target['volatility'] / df_target['volatility'].max()
+            df_target['volatility_weight'] = df_target['volatility_weight'].clip(lower=0.8, upper=1.5)
+            
+            # 综合所有权重因素
+            df_target['class_weight'] = df_target['class_weight'] * \
+                                       df_target['time_weight'] * \
+                                       df_target['restricted_weight'] * \
+                                       df_target['volatility_weight']
+            
+            # 归一化权重，确保均值为1
+            df_target['class_weight'] = df_target['class_weight'] / df_target['class_weight'].mean()
+            
+            # 统计不同时间段的目标分布
+            df_target['is_restricted_time'] = [self._is_restricted_trading_time(idx) if isinstance(idx, pd.Timestamp) else False for idx in df_target.index]
+            restricted_dist = df_target[df_target['is_restricted_time']]['target'].value_counts().sort_index()
+            normal_dist = df_target[~df_target['is_restricted_time']]['target'].value_counts().sort_index()
+            
+            self.logger.info(f"限制交易时间段目标分布: {restricted_dist.to_dict()}")
+            self.logger.info(f"正常交易时间段目标分布: {normal_dist.to_dict()}")
+            
+            # 删除临时列
+            df_target = df_target.drop(['time_weight', 'restricted_weight', 'volatility_weight', 'volatility', 'is_restricted_time'], axis=1, errors='ignore')
         
         return df_target
     
@@ -445,12 +529,44 @@ class FutureDataLoader:
         self.logger.info(f"所有文件处理完成，成功处理 {len(processed_data)} 个文件")
         return processed_data
     
-    def split_data(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    def apply_smote(self, X, y):
         """
-        分割数据集
+        应用SMOTE过采样技术处理类别不平衡问题
+        
+        Args:
+            X: 特征数据
+            y: 标签数据
+            
+        Returns:
+            X_resampled: 重采样后的特征数据
+            y_resampled: 重采样后的标签数据
+        """
+        try:
+            # 获取唯一类别的数量，确保k_neighbors不超过类别中的最小样本数-1
+            unique_classes = np.unique(y)
+            min_samples_per_class = min(np.bincount([int((cls + 1)) for cls in y]))  # 将-1转为0以正确计数
+            k_neighbors = min(5, min_samples_per_class - 1) if min_samples_per_class > 1 else 1
+            
+            self.logger.info(f"应用SMOTE过采样，k_neighbors={k_neighbors}")
+            smote = SMOTE(sampling_strategy='auto', random_state=42, k_neighbors=k_neighbors)
+            X_resampled, y_resampled = smote.fit_resample(X, y)
+            
+            # 记录过采样后的分布
+            resampled_dist = np.bincount([int((cls + 1)) for cls in y_resampled])
+            self.logger.info(f"过采样后的类别分布: {resampled_dist}")
+            
+            return X_resampled, y_resampled
+        except Exception as e:
+            self.logger.warning(f"SMOTE过采样失败: {str(e)}，将使用原始数据")
+            return X, y
+    
+    def split_data(self, df: pd.DataFrame, apply_smote=True) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        """
+        分割数据集，并可选地对训练集应用SMOTE过采样
         
         Args:
             df: 完整数据集
+            apply_smote: 是否应用SMOTE过采样
             
         Returns:
             Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]: (训练集, 验证集, 测试集)
@@ -464,9 +580,9 @@ class FutureDataLoader:
         val_size = int(n_samples * Config.VAL_RATIO)
         
         # 分割数据（保持时间顺序）
-        train_df = df.iloc[:train_size]
-        val_df = df.iloc[train_size:train_size + val_size]
-        test_df = df.iloc[train_size + val_size:]
+        train_df = df.iloc[:train_size].copy()
+        val_df = df.iloc[train_size:train_size + val_size].copy()
+        test_df = df.iloc[train_size + val_size:].copy()
         
         self.logger.info(f"数据分割完成: 训练集 {len(train_df)} 样本, 验证集 {len(val_df)} 样本, 测试集 {len(test_df)} 样本")
         
@@ -474,6 +590,69 @@ class FutureDataLoader:
         self.logger.info("训练集目标分布:")
         for target, count in train_df['target'].value_counts().items():
             self.logger.info(f"  类别 {target}: {count} ({count/len(train_df)*100:.2f}%)")
+        
+        # 如果需要应用SMOTE过采样
+        if apply_smote and hasattr(Config, 'SMOTE_ENABLED') and Config.SMOTE_ENABLED:
+            try:
+                # 检查训练集类别分布是否平衡
+                train_dist = train_df['target'].value_counts()
+                max_count = train_dist.max()
+                min_count = train_dist.min()
+                
+                # 如果最大类别和最小类别的比例超过2:1，则应用SMOTE
+                if len(train_dist) > 1 and max_count / min_count > 2.0:
+                    self.logger.info(f"类别不平衡（最大/最小比例: {max_count/min_count:.2f}），应用SMOTE过采样")
+                    
+                    # 提取特征和目标
+                    feature_columns = [col for col in train_df.columns if col not in ['target', 'class_weight'] and col not in df.index.names]
+                    
+                    # 检查是否有时序特征，如果有则创建一个时间特征
+                    if isinstance(train_df.index, pd.DatetimeIndex):
+                        train_df['time_feature'] = (train_df.index - train_df.index.min()).total_seconds() / (24*60*60)
+                        feature_columns.append('time_feature')
+                    
+                    X_train = train_df[feature_columns].values
+                    y_train = train_df['target'].values
+                    
+                    # 应用SMOTE
+                    X_resampled, y_resampled = self.apply_smote(X_train, y_train)
+                    
+                    # 创建过采样后的DataFrame
+                    train_df_resampled = pd.DataFrame(X_resampled, columns=feature_columns)
+                    train_df_resampled['target'] = y_resampled
+                    
+                    # 如果原数据有class_weight列，则为新样本生成权重
+                    if 'class_weight' in train_df.columns:
+                        # 为每个类别计算平均权重
+                        avg_weights = train_df.groupby('target')['class_weight'].mean().to_dict()
+                        # 为过采样后的样本分配权重
+                        train_df_resampled['class_weight'] = train_df_resampled['target'].map(avg_weights)
+                    
+                    # 如果添加了时间特征，删除它
+                    if 'time_feature' in train_df_resampled.columns:
+                        train_df_resampled = train_df_resampled.drop('time_feature', axis=1)
+                    
+                    # 复制其他必要的列（如果存在）
+                    for col in train_df.columns:
+                        if col not in train_df_resampled.columns and col not in feature_columns:
+                            # 对这些列使用平均值或模式值
+                            if pd.api.types.is_numeric_dtype(train_df[col]):
+                                train_df_resampled[col] = train_df[col].mean()
+                            else:
+                                train_df_resampled[col] = train_df[col].mode()[0]
+                    
+                    # 重置索引
+                    train_df_resampled = train_df_resampled.reset_index(drop=True)
+                    train_df = train_df_resampled
+                    
+                    self.logger.info(f"SMOTE过采样完成，训练集大小变为: {len(train_df)} 样本")
+                    self.logger.info("过采样后的训练集目标分布:")
+                    for target, count in train_df['target'].value_counts().items():
+                        self.logger.info(f"  类别 {target}: {count} ({count/len(train_df)*100:.2f}%)")
+                else:
+                    self.logger.info("类别分布相对平衡，跳过SMOTE过采样")
+            except Exception as e:
+                self.logger.error(f"应用SMOTE时出错: {str(e)}")
         
         return train_df, val_df, test_df
 

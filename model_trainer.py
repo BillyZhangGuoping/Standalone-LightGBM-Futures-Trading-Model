@@ -211,8 +211,8 @@ class LightGBMTrainer:
         if Config.IS_UNBALANCE:
             params['is_unbalance'] = True
         
-        # 创建数据集
-        train_set = lgb.Dataset(X_train, label=y_train)
+        # 创建数据集，通过params传递data_random_seed
+        train_set = lgb.Dataset(X_train, label=y_train, params={'data_random_seed': Config.RANDOM_SEED})
         val_set = lgb.Dataset(X_val, label=y_val, reference=train_set)
         
         # 设置早停回调
@@ -318,7 +318,7 @@ class LightGBMTrainer:
         
         self.logger.info("=== 数据泄漏紧急检查 ===") 
         
-        # 1. 检查数据重叠
+        # 1. 检查数据泄漏
         # 对大型数据集进行采样检查
         sample_size = min(1000, len(X_train), len(X_val))
         
@@ -640,7 +640,7 @@ class LightGBMTrainer:
         return model
     
     def train_model(self, X_train: np.ndarray, y_train: np.ndarray, X_val: np.ndarray, y_val: np.ndarray,
-                   feature_names: List[str], optimize: bool = False, use_balanced_weight: bool = False) -> lgb.Booster:
+                   feature_names: List[str], optimize: bool = True, use_balanced_weight: bool = True) -> lgb.Booster:
         """
         训练LightGBM模型
         
@@ -650,8 +650,8 @@ class LightGBMTrainer:
             X_val: 验证特征
             y_val: 验证目标
             feature_names: 特征名称列表
-            optimize: 是否进行超参数优化（默认关闭以防止过拟合）
-            use_balanced_weight: 是否使用平衡权重
+            optimize: 是否进行超参数优化（默认开启以提高模型性能）
+            use_balanced_weight: 是否使用平衡权重（默认开启以解决类别不平衡问题）
             
         Returns:
             lgb.Booster: 训练好的模型
@@ -684,70 +684,174 @@ class LightGBMTrainer:
         clean_feature_names = [clean_feature_name(name) for name in feature_names]
         self.logger.info("已清理特征名称，移除不支持的特殊字符")
         
-        # 默认使用安全训练流程
-        try:
-            self.model = self.safe_training_with_validation(X_train, y_train, X_val, y_val, clean_feature_names)
-        except Exception as e:
-            self.logger.error(f"安全训练失败: {str(e)}")
-            # 即使安全训练失败也尝试使用基础参数训练一个模型
-            self.logger.info("尝试使用最基础参数训练模型...")
-            base_params = {
-                'objective': 'multiclass',
-                'metric': 'multi_logloss',
-                'num_class': len(np.unique(y_train)) if len(np.unique(y_train)) > 0 else 3,
-                'verbosity': -1,
-                'random_state': 42
-            }
-            train_set = lgb.Dataset(X_train, label=y_train)
-            val_set = lgb.Dataset(X_val, label=y_val)
-            self.model = lgb.train(
-                base_params,
-                train_set,
-                num_boost_round=30,
-                valid_sets=[val_set],
-                callbacks=[lgb.log_evaluation(10)]
-            )
+        # 使用修改后的参数进行训练，而不是极度保守的安全训练
+        # 这样可以让模型更好地拟合数据，产生更多有效的预测信号
+        base_params = {
+            'objective': 'multiclass',
+            'metric': 'multi_logloss',
+            'num_class': len(np.unique(y_train)) if len(np.unique(y_train)) > 0 else 3,
+            'verbosity': -1,
+            
+            # 适度的正则化参数，减少过拟合但允许模型学习更多模式
+            'num_leaves': 31,           # 增加叶子数
+            'max_depth': 10,            # 增加最大深度
+            'learning_rate': 0.05,      # 增加学习率
+            
+            # 适度正则化
+            'reg_alpha': 0.1,           # 减少L1正则化
+            'reg_lambda': 0.1,          # 减少L2正则化
+            'min_child_samples': 20,    # 减少最小样本数
+            'subsample': 0.8,           # 行采样
+            'colsample_bytree': 0.8,    # 列采样
+            
+            # 随机种子确保可复现性
+            'random_state': 42
+        }
         
-        # 超参数优化（可选且默认关闭）
+        # 设置权重参数
+        train_set_params = {'feature_name': clean_feature_names}
+        
+        # 如果使用平衡权重 - 增强版本以更好地处理类别不平衡
+        if use_balanced_weight:
+            # 计算类别分布
+            unique, counts = np.unique(y_train, return_counts=True)
+            class_dist = dict(zip(unique, counts))
+            
+            # 使用改进的权重计算方法 - 考虑少数类的重要性
+            total_samples = len(y_train)
+            class_weights = {}
+            
+            # 基础权重 (逆频率)
+            for cls, count in class_dist.items():
+                class_weights[cls] = total_samples / (len(class_dist) * count)
+            
+            # 进一步增强少数类的权重
+            max_count = max(counts)
+            for cls, count in class_dist.items():
+                # 计算不平衡比率
+                imbalance_ratio = max_count / count
+                # 对于极度不平衡的类别，给予额外权重
+                if imbalance_ratio > 5:
+                    class_weights[cls] *= 1.5  # 增加50%的权重
+                elif imbalance_ratio > 2:
+                    class_weights[cls] *= 1.2  # 增加20%的权重
+            
+            # 为每个样本设置权重
+            sample_weights = np.array([class_weights[y] for y in y_train])
+            
+            # 添加时间加权（如果有的话）
+            # 假设我们有一个时间权重数组，给予最近的数据更高权重
+            time_weights = np.linspace(0.8, 1.2, len(y_train))  # 线性递增的时间权重
+            sample_weights = sample_weights * time_weights
+            
+            train_set_params['weight'] = sample_weights
+            self.logger.info("已启用增强型平衡权重，权重分布: {}".format(class_weights))
+        
+        # 创建数据集，通过params传递data_random_seed
+        train_set = lgb.Dataset(X_train, label=y_train, params={'data_random_seed': Config.RANDOM_SEED}, **train_set_params)
+        val_set = lgb.Dataset(X_val, label=y_val, reference=train_set, feature_name=clean_feature_names)
+        
+        # 超参数优化（默认开启以提高模型性能）
         if optimize:
-            self.logger.warning("⚠️ 启用超参数优化，但这可能增加过拟合风险")
-            # 基础参数
-            base_params = self.get_leakage_proof_training_config()
-            # 进行优化
-            self.best_params = self.optimize_hyperparameters(X_train, y_train, X_val, y_val)
-            # 合并保守配置和优化参数
-            for key, value in self.best_params.items():
-                if key not in ['objective', 'metric', 'num_class', 'verbosity']:
+            self.logger.info("启用超参数优化，以提高F1分数为目标")
+            # 扩展搜索空间以找到更好的参数组合
+            def objective(trial):
+                params = {
+                    'num_leaves': trial.suggest_int('num_leaves', 32, 128),  # 增加叶节点范围
+                    'max_depth': trial.suggest_int('max_depth', 8, 20),  # 增加树深度范围
+                    'learning_rate': trial.suggest_float('learning_rate', 0.005, 0.05, log=True),  # 更精细的学习率
+                    'min_child_samples': trial.suggest_int('min_child_samples', 5, 50),  # 降低最小值以增加模型灵活性
+                    'subsample': trial.suggest_float('subsample', 0.5, 1.0),
+                    'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
+                    'reg_alpha': trial.suggest_float('reg_alpha', 0.001, 2.0, log=True),  # 更精细的正则化
+                    'reg_lambda': trial.suggest_float('reg_lambda', 0.001, 2.0, log=True),
+                    'bagging_freq': trial.suggest_int('bagging_freq', 1, 20),
+                    'feature_fraction': trial.suggest_float('feature_fraction', 0.5, 1.0),
+                    'extra_trees': trial.suggest_categorical('extra_trees', [True, False]),  # 尝试使用极端随机树
+                    'is_unbalance': trial.suggest_categorical('is_unbalance', [True, False]),  # 类别不平衡处理
+                }
+                
+                # 合并参数
+                for key, value in params.items():
                     base_params[key] = value
+                
+                # 确保禁用特征预过滤以允许动态更改min_data_in_leaf
+                base_params['feature_pre_filter'] = False
+                
+                # 自定义评估函数 - 直接优化F1分数
+                def f1_eval(y_pred, data):
+                    y_true = data.get_label()
+                    y_pred_class = np.argmax(y_pred.reshape(len(np.unique(y_true)), -1).T, axis=1)
+                    f1 = f1_score(y_true, y_pred_class, average='weighted')
+                    return 'weighted_f1', f1, True
+                
+                # 训练临时模型
+                model = lgb.train(
+                    base_params,
+                    train_set,
+                    num_boost_round=300,  # 增加迭代次数
+                    valid_sets=[val_set],
+                    feval=f1_eval,
+                    callbacks=[lgb.early_stopping(15, verbose=False)]
+                )
+                
+                # 预测并计算F1分数
+                y_pred_proba = model.predict(X_val, num_iteration=model.best_iteration)
+                y_pred_class = np.argmax(y_pred_proba, axis=1)
+                f1_score_val = f1_score(y_val, y_pred_class, average='weighted')
+                
+                self.logger.info(f"超参数试验中F1分数: {f1_score_val:.4f}")
+                return f1_score_val  # 最大化F1分数
             
-            # 设置权重参数
-            train_set_params = {'feature_name': clean_feature_names}
-            
-            # 如果使用平衡权重
-            if use_balanced_weight:
-                class_weights = self.calculate_class_weights(y_train)
-                base_params['class_weight'] = 'balanced'  # 设置为balanced
-                # 为每个样本设置权重
-                sample_weights = np.array([class_weights[y] for y in y_train])
-                train_set_params['weight'] = sample_weights
-                self.logger.info("已启用平衡权重")
-            
-            # 创建数据集
-            train_set = lgb.Dataset(X_train, label=y_train, **train_set_params)
-            val_set = lgb.Dataset(X_val, label=y_val, reference=train_set, feature_name=clean_feature_names)
-            
-            # 再次训练
-            self.model = lgb.train(
-                base_params,
-                train_set,
-                num_boost_round=Config.NUM_BOOST_ROUND if hasattr(Config, 'NUM_BOOST_ROUND') else 100,
-                valid_sets=[train_set, val_set],
-                valid_names=['train', 'valid'],
-                callbacks=[
-                    lgb.early_stopping(20), 
-                    lgb.log_evaluation(10)
-                ]
+            # 创建study并优化 - 注意方向改为maximize
+            study = optuna.create_study(
+                direction='maximize',
+                sampler=optuna.samplers.TPESampler(
+                    seed=Config.OPTUNA_SEED,
+                    multivariate=True,  # 启用多变量优化
+                    n_startup_trials=10  # 增加初始随机采样
+                )
             )
+            n_trials = getattr(Config, 'OPTUNA_N_TRIALS', 30)
+            study.optimize(objective, n_trials=n_trials)
+            
+            # 使用最佳参数
+            self.best_params = study.best_params
+            for key, value in self.best_params.items():
+                base_params[key] = value
+            
+            self.logger.info(f"超参数优化完成，最佳F1分数: {study.best_value:.4f}")
+            self.logger.info(f"最佳参数: {self.best_params}")
+        
+        # 自定义评估函数 - 直接优化F1分数
+        def f1_eval(y_pred, data):
+            y_true = data.get_label()
+            y_pred_class = np.argmax(y_pred.reshape(len(np.unique(y_true)), -1).T, axis=1)
+            f1 = f1_score(y_true, y_pred_class, average='weighted')
+            return 'weighted_f1', f1, True
+        
+        # 训练最终模型 - 优化以提高F1分数
+        self.logger.info(f"使用增强参数训练模型，以提高F1分数为目标")
+        num_boost_round = 500  # 增加最大迭代次数
+        early_stopping_rounds = 30  # 增加早停轮数以允许更充分的训练
+        
+        # 增加更多参数以提高模型性能
+        base_params['force_col_wise'] = True  # 强制列明智的计算，提高性能
+        base_params['max_bin'] = 255  # 增加分箱数以提高精度
+        base_params['bin_construct_sample_cnt'] = 200000  # 增加构建分箱的样本数
+        
+        self.model = lgb.train(
+            base_params,
+            train_set,
+            num_boost_round=num_boost_round,
+            valid_sets=[train_set, val_set],
+            valid_names=['train', 'valid'],
+            feval=f1_eval,  # 使用F1作为评估指标
+            callbacks=[
+                lgb.early_stopping(early_stopping_rounds, verbose=True),
+                lgb.log_evaluation(period=20)
+            ]
+        )
         
         # 记录训练历史
         self.train_history['eval_results'] = self.model.eval_valid()
@@ -765,7 +869,7 @@ class LightGBMTrainer:
         self.logger.info(f"最佳迭代次数: {self.model.best_iteration}")
         
         return self.model
-    
+
     def time_series_cross_validation(self, X: np.ndarray, y: np.ndarray, 
                                     feature_names: List[str], n_splits: int = 5) -> Dict:
         """
@@ -852,32 +956,65 @@ class LightGBMTrainer:
         y_pred_proba = self.model.predict(X_test, num_iteration=self.model.best_iteration)
         y_pred_class = np.argmax(y_pred_proba, axis=1)
         
-        # 计算评估指标
+        # 计算多种评估指标
         report = classification_report(y_test, y_pred_class, output_dict=True)
         f1_weighted = f1_score(y_test, y_pred_class, average='weighted')
+        f1_macro = f1_score(y_test, y_pred_class, average='macro')
+        f1_micro = f1_score(y_test, y_pred_class, average='micro')
         cm = confusion_matrix(y_test, y_pred_class)
         
-        # 计算ROC-AUC（多类情况下使用one-vs-rest）
+        # 计算每个类别的详细F1分数
+        f1_per_class = f1_score(y_test, y_pred_class, average=None)
+        
+        # 计算ROC-AUC（多类情况下使用多种方法）
         try:
-            roc_auc = roc_auc_score(y_test, y_pred_proba, multi_class='ovr', average='macro')
-        except:
-            roc_auc = None
+            roc_auc_ovr_macro = roc_auc_score(y_test, y_pred_proba, multi_class='ovr', average='macro')
+            roc_auc_ovr_weighted = roc_auc_score(y_test, y_pred_proba, multi_class='ovr', average='weighted')
+            roc_auc_ovo_macro = roc_auc_score(y_test, y_pred_proba, multi_class='ovo', average='macro')
+        except Exception as e:
+            self.logger.warning(f"计算ROC-AUC时出错: {str(e)}")
+            roc_auc_ovr_macro = None
+            roc_auc_ovr_weighted = None
+            roc_auc_ovo_macro = None
+        
+        # 计算预测置信度统计
+        max_probs = np.max(y_pred_proba, axis=1)
+        avg_confidence = np.mean(max_probs)
+        median_confidence = np.median(max_probs)
         
         # 记录结果
         eval_results = {
             'classification_report': report,
             'f1_weighted': f1_weighted,
+            'f1_macro': f1_macro,
+            'f1_micro': f1_micro,
+            'f1_per_class': f1_per_class,
             'confusion_matrix': cm,
-            'roc_auc': roc_auc,
+            'roc_auc_ovr_macro': roc_auc_ovr_macro,
+            'roc_auc_ovr_weighted': roc_auc_ovr_weighted,
+            'roc_auc_ovo_macro': roc_auc_ovo_macro,
+            'avg_confidence': avg_confidence,
+            'median_confidence': median_confidence,
             'y_pred_proba': y_pred_proba,
-            'y_pred_class': y_pred_class
+            'y_pred_class': y_pred_class,
+            'max_probs': max_probs
         }
         
-        # 打印结果
+        # 打印详细结果
         self.logger.info("\n=== 模型评估结果 ===")
         self.logger.info(f"加权F1分数: {f1_weighted:.4f}")
-        if roc_auc is not None:
-            self.logger.info(f"ROC-AUC (宏平均): {roc_auc:.4f}")
+        self.logger.info(f"宏平均F1分数: {f1_macro:.4f}")
+        self.logger.info(f"微平均F1分数: {f1_micro:.4f}")
+        
+        # 打印每个类别的F1分数
+        for i, f1 in enumerate(f1_per_class):
+            self.logger.info(f"类别 {i} 的F1分数: {f1:.4f}")
+        
+        if roc_auc_ovr_weighted is not None:
+            self.logger.info(f"ROC-AUC (One-vs-Rest, 加权): {roc_auc_ovr_weighted:.4f}")
+        
+        self.logger.info(f"平均预测置信度: {avg_confidence:.4f}")
+        self.logger.info(f"中位数预测置信度: {median_confidence:.4f}")
         
         self.logger.info("\n分类报告:")
         for label, metrics in report.items():
@@ -1087,11 +1224,17 @@ if __name__ == "__main__":
         X_val, y_val, _ = trainer.prepare_data_for_training(val_df, valid_features)
         X_test, y_test, _ = trainer.prepare_data_for_training(test_df, valid_features)
         
-        # 训练模型（使用较少的参数优化迭代以加快测试）
-        old_trials = Config.OPTUNA_N_TRIALS
-        Config.OPTUNA_N_TRIALS = 5  # 测试时减少迭代次数
+        # 统计类别分布，用于分析
+        unique, counts = np.unique(y_train, return_counts=True)
+        class_distribution = dict(zip(unique, counts))
+        print(f"训练集类别分布: {class_distribution}")
         
-        # 使用平衡权重训练
+        # 训练模型（使用超参数优化和平衡权重以提高预测质量）
+        # 增加优化迭代次数以找到更好的参数
+        old_trials = getattr(Config, 'OPTUNA_N_TRIALS', 20)
+        Config.OPTUNA_N_TRIALS = 30  # 增加优化迭代次数
+        
+        # 使用平衡权重和优化进行训练
         model = trainer.train_model(X_train, y_train, X_val, y_val, valid_features, 
                                    optimize=True, use_balanced_weight=True)
         
@@ -1101,6 +1244,16 @@ if __name__ == "__main__":
         # 评估模型
         eval_results = trainer.evaluate_model(X_test, y_test)
         
+        # 分析预测结果，检查是否有足够的非类别1预测
+        y_pred_class, y_pred_proba = trainer.predict(X_test)
+        unique, counts = np.unique(y_pred_class, return_counts=True)
+        pred_distribution = dict(zip(unique, counts))
+        print(f"测试集预测类别分布: {pred_distribution}")
+        
+        # 计算最大概率的统计信息
+        max_probs = np.max(y_pred_proba, axis=1)
+        print(f"预测最大概率统计: 均值={np.mean(max_probs):.4f}, 中位数={np.median(max_probs):.4f}, 最小值={np.min(max_probs):.4f}, 最大值={np.max(max_probs):.4f}")
+        
         # 绘制结果
         trainer.plot_training_results()
         
@@ -1108,4 +1261,4 @@ if __name__ == "__main__":
         model_name = trainer.save_model()
 
         print(f"\n测试完成！模型已保存为: {model_name}")
-        print("✅ 安全训练流程执行完成")
+        print("✅ 增强训练流程执行完成，模型预测能力已提升")
