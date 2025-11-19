@@ -91,9 +91,16 @@ def preprocess_data(df, config):
     df_processed['ma_5'] = df_processed['close'].rolling(window=5).mean()
     df_processed['ma_10'] = df_processed['close'].rolling(window=10).mean()
     df_processed['ma_20'] = df_processed['close'].rolling(window=20).mean()
+    df_processed['ma_50'] = df_processed['close'].rolling(window=50).mean()  # 50周期简单移动平均线
     df_processed['ma_diff_5'] = df_processed['close'] - df_processed['ma_5']
     df_processed['ma_diff_10'] = df_processed['close'] - df_processed['ma_10']
     df_processed['ma_diff_pct_20'] = (df_processed['close'] - df_processed['ma_20']) / df_processed['ma_20']
+    
+    # ATR（Average True Range）指标计算
+    df_processed['tr'] = np.maximum(df_processed['high'] - df_processed['low'], 
+                                      np.abs(df_processed['high'] - df_processed['close'].shift(1)), 
+                                      np.abs(df_processed['low'] - df_processed['close'].shift(1)))
+    df_processed['atr_14'] = df_processed['tr'].rolling(window=14).mean()  # 14周期ATR
     
     # 移动平均线斜率
     df_processed['slope_10'] = df_processed['ma_10'].diff(10) / 10
@@ -204,17 +211,52 @@ def backtest_strategy(df, predictions, config):
     zero_prediction_start_index = -1  # 记录预测为0的起始位置
     consecutive_zero_count = 0  # 记录预测为0的连续K线数量
     position_enter_time = 0  # 记录持仓进入的索引位置
+    trade_count = 0  # 记录交易次数
     
-    # 策略参数 - 进一步放宽以增加交易机会
-    LOOKAHEAD = 2  # 保持相同的持有期
-    COOLDOWN_PERIOD = 3  # 进一步减少冷却期
-    CONSECUTIVE_SIGNAL_THRESHOLD = 1  # 保持放宽的连续信号要求
+    # 策略参数 - 从配置文件中获取
+    LOOKAHEAD = config.get('holding_period', 5)  # 持有期
+    COOLDOWN_PERIOD = 5  # 冷却期 (暂时保留默认值)
+    CONSECUTIVE_SIGNAL_THRESHOLD = config.get('consecutive_signals', 2)  # 连续信号要求
+    STOP_LOSS_MULTIPLIER = config.get('stop_loss_multiplier', 3.0)  # 止损倍数 (基于ATR)
+    TAKE_PROFIT_MULTIPLIER = config.get('take_profit_multiplier', 6.0)  # 止盈倍数 (基于ATR)
+    
+    # 添加调试信息
+    print(f"=== 回测参数 ===")
+    print(f"持有期: {LOOKAHEAD}")
+    print(f"连续信号阈值: {CONSECUTIVE_SIGNAL_THRESHOLD}")
+    print(f"止损倍数: {STOP_LOSS_MULTIPLIER}")
+    print(f"止盈倍数: {TAKE_PROFIT_MULTIPLIER}")
+    
+    # 分析信号分布
+    buy_signals = sum(predictions == 1)
+    sell_signals = sum(predictions == -1)
+    no_signals = sum(predictions == 0)
+    print(f"=== 信号分布 ===")
+    print(f"多头信号: {buy_signals}")
+    print(f"空头信号: {sell_signals}")
+    print(f"无信号: {no_signals}")
+    print(f"总信号: {len(predictions)}")
+    
     last_signals = []  # 存储最近的信号
     
+    # 连续信号计数
+    consecutive_bull_signals = 0
+    consecutive_bear_signals = 0
+
     # 执行回测
     for i in range(len(backtest_df)):
         dt = backtest_df.iloc[i]['bob']
         pred = backtest_df.iloc[i]['prediction']
+        # 更新连续信号计数
+        if pred == 1:
+            consecutive_bull_signals += 1
+            consecutive_bear_signals = 0
+        elif pred == -1:
+            consecutive_bear_signals += 1
+            consecutive_bull_signals = 0
+        else:
+            consecutive_bull_signals = 0
+            consecutive_bear_signals = 0
         close_price = backtest_df.iloc[i]['close']
         high_price = backtest_df.iloc[i]['high']
         low_price = backtest_df.iloc[i]['low']
@@ -264,7 +306,95 @@ def backtest_strategy(df, predictions, config):
                 # 重置持仓时间
                 position_enter_time = i
             
-            # 动态计算止盈价
+            # 止损止盈机制
+            current_atr = backtest_df.iloc[i].get('atr_14', 3)  # 使用atr_14代替atr_5
+            
+            # 增加日志输出
+            print(f"  交易{trade_count}: 仓位={current_position}, ATR={current_atr:.4f}, 入场价={last_entry_price:.4f}, 当前价={close_price:.4f}")
+            
+            if current_position == 1:
+                # 多头止损止盈
+                stop_loss_multiplier = config.get('stop_loss_multiplier', 2.0)
+                take_profit_multiplier = config.get('take_profit_multiplier', 4.0)
+                stop_loss_price = last_entry_price - current_atr * stop_loss_multiplier
+                take_profit_price = last_entry_price + current_atr * take_profit_multiplier
+                
+                print(f"  多头: 止损价={stop_loss_price:.4f}, 止盈价={take_profit_price:.4f}, 最高价={high_price:.4f}, 最低价={low_price:.4f}")
+                
+                # 检查止损
+                if low_price <= stop_loss_price:
+                    # 触发止损
+                    backtest_df.iloc[i, backtest_df.columns.get_loc('signal')] = -current_position
+                    backtest_df.iloc[i, backtest_df.columns.get_loc('position')] = 0
+                    pnl = (stop_loss_price - last_entry_price) * current_position
+                    backtest_df.iloc[i, backtest_df.columns.get_loc('pnl')] = pnl
+                    print(f"  触发止损，盈利={pnl:.4f}")
+                    last_entry_price = 0
+                    current_position = 0
+                    consecutive_zeros = 0
+                    zero_prediction_start_index = -1
+                    consecutive_zero_count = 0
+                    position_enter_time = 0
+                    continue
+                
+                # 检查止盈
+                if high_price >= take_profit_price:
+                    # 触发止盈
+                    backtest_df.iloc[i, backtest_df.columns.get_loc('signal')] = -current_position
+                    backtest_df.iloc[i, backtest_df.columns.get_loc('position')] = 0
+                    pnl = (take_profit_price - last_entry_price) * current_position
+                    backtest_df.iloc[i, backtest_df.columns.get_loc('pnl')] = pnl
+                    print(f"  触发止盈，盈利={pnl:.4f}")
+                    last_entry_price = 0
+                    current_position = 0
+                    consecutive_zeros = 0
+                    zero_prediction_start_index = -1
+                    consecutive_zero_count = 0
+                    position_enter_time = 0
+                    continue
+            
+            # 空单止损止盈
+            elif current_position == -1:
+                stop_loss_multiplier = config.get('stop_loss_multiplier', 2.0)
+                take_profit_multiplier = config.get('take_profit_multiplier', 4.0)
+                stop_loss_price = last_entry_price + current_atr * stop_loss_multiplier
+                take_profit_price = last_entry_price - current_atr * take_profit_multiplier
+                
+                print(f"  空头: 止损价={stop_loss_price:.4f}, 止盈价={take_profit_price:.4f}, 最高价={high_price:.4f}, 最低价={low_price:.4f}")
+                
+                # 检查止损
+                if high_price >= stop_loss_price:
+                    # 触发止损
+                    backtest_df.iloc[i, backtest_df.columns.get_loc('signal')] = -current_position
+                    backtest_df.iloc[i, backtest_df.columns.get_loc('position')] = 0
+                    pnl = (stop_loss_price - last_entry_price) * current_position
+                    backtest_df.iloc[i, backtest_df.columns.get_loc('pnl')] = pnl
+                    print(f"  触发止损，盈利={pnl:.4f}")
+                    last_entry_price = 0
+                    current_position = 0
+                    consecutive_zeros = 0
+                    zero_prediction_start_index = -1
+                    consecutive_zero_count = 0
+                    position_enter_time = 0
+                    continue
+                
+                # 检查止盈
+                if low_price <= take_profit_price:
+                    # 触发止盈
+                    backtest_df.iloc[i, backtest_df.columns.get_loc('signal')] = -current_position
+                    backtest_df.iloc[i, backtest_df.columns.get_loc('position')] = 0
+                    pnl = (take_profit_price - last_entry_price) * current_position
+                    backtest_df.iloc[i, backtest_df.columns.get_loc('pnl')] = pnl
+                    print(f"  触发止盈，盈利={pnl:.4f}")
+                    last_entry_price = 0
+                    current_position = 0
+                    consecutive_zeros = 0
+                    zero_prediction_start_index = -1
+                    consecutive_zero_count = 0
+                    position_enter_time = 0
+                    continue
+            
+            # 优化：当连续预测为0时，结合ATR调整止损止盈
             if pred == 0:
                 # 记录连续预测为0的K线数量
                 if zero_prediction_start_index == -1:
@@ -275,77 +405,6 @@ def backtest_strategy(df, predictions, config):
             else:
                 consecutive_zero_count = 0
                 zero_prediction_start_index = -1
-            
-            # 动态止盈条件：使用30分钟ATR和价格的最大值
-            if current_position == 1:
-                # 获取30分钟ATR值（如果存在）
-                atr_30 = backtest_df.iloc[i].get('atr_30', 0) if i < len(backtest_df) else 0
-                # 动态止盈价 = 开仓价 + max(30分钟ATR, 3个价格)
-                take_profit_amount = max(atr_30, 3)
-                take_profit_price = last_entry_price + take_profit_amount
-                
-                if high_price >= take_profit_price:
-                    # 平仓
-                    backtest_df.iloc[i, backtest_df.columns.get_loc('signal')] = -current_position
-                    backtest_df.iloc[i, backtest_df.columns.get_loc('position')] = 0
-                    # 计算盈亏
-                    pnl = (close_price - last_entry_price) * current_position
-                    backtest_df.iloc[i, backtest_df.columns.get_loc('pnl')] = pnl
-                    last_entry_price = 0
-                    current_position = 0
-                    consecutive_zeros = 0
-                    zero_prediction_start_index = -1
-                    consecutive_zero_count = 0
-                    position_enter_time = 0
-                    continue
-            
-            # 空单动态止盈条件
-            elif current_position == -1:
-                # 获取30分钟ATR值（如果存在）
-                atr_30 = backtest_df.iloc[i].get('atr_30', 0) if i < len(backtest_df) else 0
-                # 动态止盈价 = 开仓价 - max(30分钟ATR, 3个价格)
-                take_profit_amount = max(atr_30, 3)
-                take_profit_price = last_entry_price - take_profit_amount
-                
-                if low_price <= take_profit_price:
-                    # 平仓
-                    backtest_df.iloc[i, backtest_df.columns.get_loc('signal')] = -current_position
-                    backtest_df.iloc[i, backtest_df.columns.get_loc('position')] = 0
-                    # 计算盈亏
-                    pnl = (close_price - last_entry_price) * current_position
-                    backtest_df.iloc[i, backtest_df.columns.get_loc('pnl')] = pnl
-                    last_entry_price = 0
-                    current_position = 0
-                    consecutive_zeros = 0
-                    zero_prediction_start_index = -1
-                    consecutive_zero_count = 0
-                    position_enter_time = 0
-                    continue
-            
-            # 检查预测是否为0的4根K线自动平仓逻辑
-            if pred == 0:
-                # 记录第一次预测为0的位置
-                if zero_prediction_start_index == -1:
-                    zero_prediction_start_index = i
-                # 检查是否达到4根k线
-                elif i - zero_prediction_start_index >= 3:  # 0,1,2,3共4根k线
-                    # 平仓
-                    backtest_df.iloc[i, backtest_df.columns.get_loc('signal')] = -current_position
-                    backtest_df.iloc[i, backtest_df.columns.get_loc('position')] = 0
-                    # 计算盈亏
-                    pnl = (close_price - last_entry_price) * current_position
-                    backtest_df.iloc[i, backtest_df.columns.get_loc('pnl')] = pnl
-                    last_entry_price = 0
-                    current_position = 0
-                    consecutive_zeros = 0
-                    zero_prediction_start_index = -1
-                    consecutive_zero_count = 0
-                    position_enter_time = 0
-                    continue
-            else:
-                # 预测不为0，重置计数
-                zero_prediction_start_index = -1
-                consecutive_zero_count = 0
             
             # 持有时间达到强制平仓条件
             if force_close:
@@ -368,58 +427,35 @@ def backtest_strategy(df, predictions, config):
         
         # 如果为空仓，检查是否可以开仓
         else:
-            # 记录最近的信号
-            last_signals.append(pred)
-            if len(last_signals) > CONSECUTIVE_SIGNAL_THRESHOLD:
-                last_signals.pop(0)
-                
             # 检查是否为限制开仓时间
             restricted = is_restricted_time(dt)
             
-            # 添加信号质量过滤
-            if not restricted and pred != 0:
-                # 简化的信号确认逻辑
-                signal_confirmed = True
-                
-                # 条件1: 价格动量确认（使用更宽松的条件）
-                if i >= 1:
-                    if pred == 1:  # 多头信号
-                        # 只需要最近一个bar价格上涨
-                        if backtest_df.iloc[i]['close'] <= backtest_df.iloc[i-1]['close']:
-                            # 可以有条件地接受逆势头寸，但降低开仓概率
-                            if backtest_df.iloc[i]['close'] < backtest_df.iloc[i-1]['close'] * 0.998:  # 下跌超过0.2%则不考虑
-                                signal_confirmed = False
-                    elif pred == -1:  # 空头信号
-                        # 只需要最近一个bar价格下跌
-                        if backtest_df.iloc[i]['close'] >= backtest_df.iloc[i-1]['close']:
-                            # 可以有条件地接受逆势头寸，但降低开仓概率
-                            if backtest_df.iloc[i]['close'] > backtest_df.iloc[i-1]['close'] * 1.002:  # 上涨超过0.2%则不考虑
-                                signal_confirmed = False
-                
-                # 条件2: 简单的波动性过滤
-                if i >= 1 and signal_confirmed:
-                    price_change = abs(backtest_df.iloc[i]['close'] - backtest_df.iloc[i-1]['close'])
-                    avg_price = (backtest_df.iloc[i]['high'] + backtest_df.iloc[i]['low']) / 2
-                    # 只过滤极端波动
-                    if price_change / avg_price > 0.02:  # 提高阈值到2%
-                        signal_confirmed = False
-                
-                # 开仓条件：简化的过滤条件
-                if signal_confirmed:
-                    # 开仓
-                    backtest_df.iloc[i, backtest_df.columns.get_loc('signal')] = pred
-                    backtest_df.iloc[i, backtest_df.columns.get_loc('position')] = pred
+            if not restricted:
+                # 直接基于模型预测的信号开仓
+                if pred == 1:
+                    # 多头信号：买入1手沪深300
+                    backtest_df.iloc[i, backtest_df.columns.get_loc('signal')] = 1
+                    backtest_df.iloc[i, backtest_df.columns.get_loc('position')] = 1
                     last_entry_price = close_price
-                    current_position = pred
+                    current_position = 1
                     position_enter_time = i  # 记录持仓进入时间
-                    print(f"时间点 {dt} -> 成功开仓: 信号 {pred}，价格 {close_price}")
+                    trade_count += 1  # 增加交易次数
+                    print(f"时间点 {dt} -> 成功开仓: 多头信号，价格 {close_price}")
+                elif pred == -1:
+                    # 空头信号：卖出1手沪深300
+                    backtest_df.iloc[i, backtest_df.columns.get_loc('signal')] = -1
+                    backtest_df.iloc[i, backtest_df.columns.get_loc('position')] = -1
+                    last_entry_price = close_price
+                    current_position = -1
+                    position_enter_time = i  # 记录持仓进入时间
+                    trade_count += 1  # 增加交易次数
+                    print(f"时间点 {dt} -> 成功开仓: 空头信号，价格 {close_price}")
             zero_prediction_start_index = -1
-    
+
     # 计算累计盈亏
     backtest_df['cum_pnl'] = backtest_df['pnl'].cumsum()
-    
-    return backtest_df
 
+    return backtest_df
 def calculate_performance_metrics(backtest_df, initial_capital=1000000):
     """计算性能指标"""
     # 计算日收益率
@@ -436,7 +472,7 @@ def calculate_performance_metrics(backtest_df, initial_capital=1000000):
     
     # 夏普比率（无风险利率3%）
     risk_free_rate = 0.03
-    sharpe_ratio = (annual_return - risk_free_rate) / annual_volatility if annual_volatility > 0 else 0
+    sharpe_ratio = (annual_return - risk_free_rate) / annual_volatility if (annual_volatility > 0 and not np.isnan(annual_volatility)) else 0
     
     # 最大回撤
     cumulative_returns = 1 + backtest_df['cum_pnl'] / initial_capital
@@ -499,27 +535,52 @@ def plot_performance(backtest_df, cumulative_returns, drawdown, save_dir):
     plt.close()
 
 def apply_confidence_threshold(raw_outputs_array, threshold):
-    """根据置信度阈值过滤预测结果"""
-    # 使用softmax将原始输出转换为概率
+    """
+    对模型输出应用置信度阈值过滤
+    
+    参数:
+        outputs: 模型原始输出 (shape: [n_samples, 3])
+        threshold: 置信度阈值
+        
+    返回:
+        predictions: 过滤后的预测结果 (-1, 0, 1)
+        max_probabilities: 每个样本的最大概率值
+        probabilities: 所有类别的概率值
+    """
+    # 打印原始输出的分布情况
+    print(f"原始输出形状: {raw_outputs_array.shape}")
+    print(f"原始输出范围: {raw_outputs_array.min()} 到 {raw_outputs_array.max()}")
+    print(f"原始输出均值: {raw_outputs_array.mean()}")
+    print(f"原始输出前5行:\n{raw_outputs_array[:5]}")
+    
+    # 应用softmax转换为概率
     from scipy.special import softmax
     probabilities = softmax(raw_outputs_array, axis=1)
     
-    # 获取每个预测的最大概率和对应的类别
-    max_probs = np.max(probabilities, axis=1)
+    # 获取最大概率和对应类别
+    max_probabilities = np.max(probabilities, axis=1)
     predicted_classes = np.argmax(probabilities, axis=1)
     
-    # 当置信度低于阈值时，将预测设置为0（无信号）
+    # 将类别转换为-1, 0, 1
     filtered_predictions = np.array([-1, 0, 1])[predicted_classes]
-    filtered_predictions[max_probs < threshold] = 0
     
-    return filtered_predictions, max_probs, probabilities
+    # 应用置信度阈值：概率低于阈值的信号设为0
+    filtered_predictions[max_probabilities < threshold] = 0
+    
+    return filtered_predictions, max_probabilities, probabilities
 
 def main():
     # 配置参数
     config = {
         'initial_capital': 1000000,
         'model_type': 'lightgbm',  # 使用LightGBM模型
-        'sequence_length': 20  # 即使使用LightGBM，backtest_strategy函数仍需要此参数
+         'sequence_length': 20,  # 即使使用LightGBM，backtest_strategy函数仍需要此参数
+         'stop_loss_multiplier': 2.0,  # ATR倍数止损 (降低以减少止损触发)
+    'take_profit_multiplier': 5.0,  # ATR倍数止盈 (提高以增加盈利潜力)
+    'holding_period': 5,  # 持仓期限 (与模型训练窗口保持一致)
+    'consecutive_signals': 1,  # 连续相同信号次数 (降低以增加交易机会)
+    'volatility_filter': 0.01,  # 波动性过滤阈值 (降低以增加交易机会)
+    'momentum_confirmation': False  # 关闭动量确认 (增加交易机会)
     }
     
     print(f"使用LightGBM模型进行回测")
@@ -618,31 +679,20 @@ def main():
     X_pred = df_processed[feature_columns].values
     print(f"预测数据形状: {X_pred.shape}")
     
-    # 模型预测
-    # LightGBM的predict方法默认返回概率
-    probabilities = model.predict(X_pred)
+    # 模型预测：获取原始logits（raw_score=True）
+    logits = model.predict(X_pred, raw_score=True)
     
-    # 添加调试信息：打印原始概率分布
-    print(f"原始概率形状: {probabilities.shape}")
-    print(f"部分原始概率示例:")
-    if len(probabilities.shape) > 1:
-        print(f"前5个样本的原始概率: {probabilities[:5]}")
-    else:
-        print(f"前5个样本的原始概率: {probabilities[:5]}")
+    # 添加调试信息：打印原始logits分布
+    print(f"原始logits形状: {logits.shape}")
+    print(f"部分原始logits示例: {logits[:5]}")
     
-    # 如果返回的是2D数组（多类分类），取最大值索引作为预测类别
-    if len(probabilities.shape) > 1:
-        predicted_classes = np.argmax(probabilities, axis=1)
-        max_probs = np.max(probabilities, axis=1)
-    else:
-        # 二分类情况，需要调整
-        predicted_classes = (probabilities > 0.5).astype(int)
-        max_probs = np.maximum(probabilities, 1 - probabilities)
-        # 扩展为3类格式
-        temp_probs = np.zeros((len(probabilities), 3))
-        for i, cls in enumerate(predicted_classes):
-            temp_probs[i, cls + 1] = 1.0  # 假设二分类结果对应类别1和2
-        probabilities = temp_probs
+    # 转换logits为概率
+    from scipy.special import softmax
+    probabilities = softmax(logits, axis=1)
+    
+    # 计算最大概率和预测类别
+    max_probs = np.max(probabilities, axis=1)
+    predicted_classes = np.argmax(probabilities, axis=1)
     
     # 添加调试信息：打印预测类别分布
     unique_classes, class_counts = np.unique(predicted_classes, return_counts=True)
@@ -653,12 +703,18 @@ def main():
     # 假设类别0对应下跌(-1)，类别1对应震荡(0)，类别2对应上涨(1)
     class_mapping = {0: -1, 1: 0, 2: 1}
     predicted_classes_mapped = [class_mapping.get(cls, 0) for cls in predicted_classes]
-    raw_outputs_array = probabilities
+    raw_outputs_array = logits  # 使用原始logits作为apply_confidence_threshold的输入
     print(f"原始输出形状: {raw_outputs_array.shape}")
     print(f"部分原始输出示例: {raw_outputs_array[:5]}")
+    max_probs = np.max(probabilities, axis=1)
+    print(f"原始输出的最大置信度分布:")
+    print(f"平均值: {np.mean(max_probs)}")
+    print(f"中位数: {np.median(max_probs)}")
+    print(f"最小值: {np.min(max_probs)}")
+    print(f"最大值: {np.max(max_probs)}")
     
-    # 使用不同置信度阈值进行回测，添加更低的阈值以捕获更多交易信号
-    confidence_thresholds = [0.2, 0.25, 0.3, 0.35, 0.4]  # 添加更低的阈值来捕获更多交易信号
+    # 使用不同置信度阈值进行回测 - 提高阈值以过滤低置信度信号
+    confidence_thresholds = [0.9, 0.95, 0.97, 0.98, 0.99]  # 调整为接近1.0的阈值以显示效果
     all_results = {}
     
     for threshold in confidence_thresholds:
@@ -686,7 +742,7 @@ def main():
         
         # 回测策略
         print("开始回测...")
-        backtest_df = backtest_strategy(df, filtered_predictions_truncated, config)
+        backtest_df = backtest_strategy(df_processed, filtered_predictions_truncated, config)
         
         # 添加概率信息到回测结果中，确保包含所有bar数据
         result_df = df[config['sequence_length']-1:].copy()

@@ -132,6 +132,7 @@ def main():
     # 加载和预处理所有文件
     df_combined = pd.DataFrame()
     for file_path in data_files:
+        # 主程序执行
         try:
             logger.info(f"处理文件: {file_path}")
             

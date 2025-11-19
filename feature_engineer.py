@@ -226,12 +226,19 @@ class FeatureEngineer:
             df_features[f'bb_lower_break_{window}'] = 0
             df_features.loc[df_features['close'] > upper_band, f'bb_upper_break_{window}'] = 1
             df_features.loc[df_features['close'] < lower_band, f'bb_lower_break_{window}'] = 1
+            
+            # 布林带回踩（突破后回到内部）
+            df_features[f'bb_upper_retrace_{window}'] = 0
+            df_features.loc[df_features[f'bb_upper_break_{window}'].shift(1) == 1 & (df_features['close'] < upper_band), f'bb_upper_retrace_{window}'] = 1
+            df_features[f'bb_lower_retrace_{window}'] = 0
+            df_features.loc[df_features[f'bb_lower_break_{window}'].shift(1) == 1 & (df_features['close'] > lower_band), f'bb_lower_retrace_{window}'] = 1
         
         # 添加到特征列表
         for window in Config.BB_WINDOWS:
             new_features = [f'bb_upper_{window}', f'bb_middle_{window}', f'bb_lower_{window}',
                            f'bb_bandwidth_{window}', f'bb_position_{window}', 
-                           f'bb_upper_break_{window}', f'bb_lower_break_{window}']
+                           f'bb_upper_break_{window}', f'bb_lower_break_{window}',
+                           f'bb_upper_retrace_{window}', f'bb_lower_retrace_{window}']
             self.feature_names.extend(new_features)
         
         return df_features
@@ -588,39 +595,61 @@ class FeatureEngineer:
         if len(non_numeric_columns) > 0:
             self.logger.info(f"移除非数值型列: {list(non_numeric_columns)}")
             df_features = df_features[numeric_columns]
-        
+
         # 1. 基础价格特征
+        self.logger.info(f"基础价格特征计算中...")
         df_features = self.calculate_basic_price_features(df_features)
-        
-        # 2. 移动平均线
+        self.logger.info(f"基础价格特征计算完成")
+
+        # 2. 移动平均线特征
+        self.logger.info(f"移动平均线特征计算中...")
         df_features = self.calculate_moving_averages(df_features)
-        
-        # 3. RSI指标
+        self.logger.info(f"移动平均线特征计算完成")
+
+        # 3. RSI特征
+        self.logger.info(f"RSI特征计算中...")
         df_features = self.calculate_rsi(df_features)
-        
-        # 4. MACD指标
+        self.logger.info(f"RSI特征计算完成")
+
+        # 4. MACD特征
+        self.logger.info(f"MACD特征计算中...")
         df_features = self.calculate_macd(df_features)
-        
-        # 5. 布林带
+        self.logger.info(f"MACD特征计算完成")
+
+        # 5. 布林带特征
+        self.logger.info(f"布林带特征计算中...")
         df_features = self.calculate_bollinger_bands(df_features)
-        
+        self.logger.info(f"布林带特征计算完成")
+
         # 6. 波动率特征
+        self.logger.info(f"波动率特征计算中...")
         df_features = self.calculate_volatility_features(df_features)
-        
+        self.logger.info(f"波动率特征计算完成")
+
         # 7. 动量特征
+        self.logger.info(f"动量特征计算中...")
         df_features = self.calculate_momentum_features(df_features)
-        
+        self.logger.info(f"动量特征计算完成")
+
         # 8. 成交量特征
+        self.logger.info(f"成交量特征计算中...")
         df_features = self.calculate_volume_features(df_features)
-        
+        self.logger.info(f"成交量特征计算完成")
+
         # 9. 统计特征
+        self.logger.info(f"统计特征计算中...")
         df_features = self.calculate_statistical_features(df_features)
-        
+        self.logger.info(f"统计特征计算完成")
+
         # 10. 滞后特征
+        self.logger.info(f"滞后特征计算中...")
         df_features = self.create_lag_features(df_features)
-        
+        self.logger.info(f"滞后特征计算完成")
+
         # 11. 时间特征
+        self.logger.info(f"时间特征计算中...")
         df_features = self.create_time_based_features(df_features)
+        self.logger.info(f"时间特征计算完成")
         
         # 清理数据
         df_features = df_features.replace([np.inf, -np.inf], np.nan)
